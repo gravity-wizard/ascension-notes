@@ -6,28 +6,24 @@ options:
     iOS: "17.0"
   xcodeVersion: "16.0"
 
+packages:
+  AscensionLocal:
+    path: .
+
 settings:
   base:
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
 
 targets:
-  AscensionCore:
-    type: framework
-    platform: [macOS, iOS]
-    sources:
-      - path: Sources/AscensionCore
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.gravitywizard.ascension.core
-
   AscensionNotesApp:
     type: application
-    platform: [macOS, iOS]
+    supportedDestinations: [iOS, macOS]
     sources:
       - path: Sources/AscensionNotesApp
     dependencies:
-      - target: AscensionCore
+      - package: AscensionLocal
+        product: AscensionCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.gravitywizard.ascension.notes
@@ -44,11 +40,12 @@ targets:
 
   AscensionCoreTests:
     type: bundle.unit-test
-    platform: [macOS, iOS]
+    supportedDestinations: [iOS, macOS]
     sources:
       - path: Tests/AscensionCoreTests
     dependencies:
-      - target: AscensionCore
+      - package: AscensionLocal
+        product: AscensionCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.gravitywizard.ascension.core.tests
