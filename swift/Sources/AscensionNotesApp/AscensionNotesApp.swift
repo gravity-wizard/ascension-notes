@@ -12,13 +12,39 @@ import UIKit
 
 private let notesGold = Color(red: 0.90, green: 0.64, blue: 0.08)
 
+#if os(macOS)
+@MainActor
+final class MacAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            sender.windows.first?.makeKeyAndOrderFront(nil)
+        }
+        return true
+    }
+}
+#endif
+
 @main
 struct AscensionNotesApp: App {
+    #if os(macOS)
+    @NSApplicationDelegateAdaptor(MacAppDelegate.self) private var appDelegate
+    #endif
+
     var body: some Scene {
         WindowGroup("Ascension Notes") {
             AscensionNotesRootView()
                 #if os(macOS)
                 .frame(minWidth: 920, minHeight: 580)
+                .onAppear {
+                    NSApplication.shared.setActivationPolicy(.regular)
+                    NSApplication.shared.activate(ignoringOtherApps: true)
+                    NSApp.windows.first?.makeKeyAndOrderFront(nil)
+                }
                 #endif
         }
         #if os(macOS)
@@ -63,8 +89,19 @@ struct AscensionNotesRootView: View {
 
     // MARK: - Column 1: Folders Sidebar (Apple Notes Style)
 
+    private var sidebarSelectionBinding: Binding<SidebarFilter?> {
+        Binding(
+            get: { store.sidebarFilter },
+            set: { newValue in
+                if let newValue {
+                    store.sidebarFilter = newValue
+                }
+            }
+        )
+    }
+
     private var foldersSidebar: some View {
-        List(selection: $store.sidebarFilter) {
+        List(selection: sidebarSelectionBinding) {
             Section("Library") {
                 sidebarRow(.all)
                 sidebarRow(.pinned)
@@ -112,7 +149,7 @@ struct AscensionNotesRootView: View {
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
         }
-        .tag(filter)
+        .tag(filter as SidebarFilter?)
     }
 
     // MARK: - Column 2: Searchable Notes List
@@ -137,7 +174,7 @@ struct AscensionNotesRootView: View {
                 List(selection: $store.selectedNoteID) {
                     ForEach(store.filteredNotes) { note in
                         noteRowCard(note)
-                            .tag(note.id)
+                            .tag(note.id as UUID?)
                             .contextMenu {
                                 Button {
                                     store.togglePin(note.id)
