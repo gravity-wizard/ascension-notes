@@ -80,10 +80,23 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
     /// Apple Notes convention: Line 1 is the note title.
     public var derivedTitle: String {
         let firstLine = rawText
-            .split(separator: "\n", omittingEmptySubsequences: false)
+            .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
             .first
-            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
-        return firstLine.isEmpty ? "New Note" : firstLine
+            .map { String($0) } ?? ""
+        return firstLine
+    }
+
+    public var displayTitle: String {
+        let trimmed = derivedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "New Note" : trimmed
+    }
+
+    /// Everything after the first newline.
+    public var derivedBody: String {
+        guard let nl = rawText.firstIndex(of: "\n") else {
+            return ""
+        }
+        return String(rawText[rawText.index(after: nl)...])
     }
 
     public func compiledDocument(urlSafeDash: Bool = false) -> AXIFDocument? {
@@ -94,7 +107,7 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
             normalizedCode = (try? Acode9.toCaret(ownerAcode9)) ?? ownerAcode9
         }
         return try? AXIFDocument(
-            title: derivedTitle,
+            title: displayTitle,
             rawText: rawText,
             ownerAcode9: normalizedCode,
             timestampUnix: Int64(updatedAt.timeIntervalSince1970)
@@ -115,8 +128,8 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
 @Observable
 final class NotesStore {
     enum ViewLayerMode: String, CaseIterable, Identifiable {
+        case edit = "Edit"
         case clean = "Clean View"
-        case edit = "Edit MUNSC"
         var id: String { rawValue }
     }
 
@@ -124,9 +137,12 @@ final class NotesStore {
     var sidebarFilter: SidebarFilter = .all
     var selectedNoteID: UUID?
 
-    var viewMode: ViewLayerMode = .clean
+    /// Default to live editing like Apple Notes so opening any note allows immediate Title & Body changes.
+    var viewMode: ViewLayerMode = .edit
     var showFindBar: Bool = false
     var showInspector: Bool = false
+    var showHelp: Bool = false
+    var autoCapitalizeNewLines: Bool = true
 
     var query: String = ""
     var caseSensitive: Bool = true
@@ -182,11 +198,10 @@ final class NotesStore {
             if matchesQuery(in: note) {
                 return true
             }
-            let codeMatches = note.ownerAcode9.range(
+            return note.ownerAcode9.range(
                 of: trimmedQuery,
                 options: caseSensitive ? [] : [.caseInsensitive]
             ) != nil
-            return codeMatches
         }
     }
 
@@ -243,14 +258,99 @@ final class NotesStore {
         }
     }
 
-    func updateSelectedRawText(_ newValue: String) {
+    func updateSelectedTitle(_ newTitle: String) {
         guard let id = selectedNote?.id,
               let idx = notes.firstIndex(where: { $0.id == id }) else { return }
-        if notes[idx].rawText != newValue {
-            notes[idx].rawText = newValue
+
+        let singleLine = newTitle.replacingOccurrences(of: "\n", with: " ")
+        let oldTitle = notes[idx].derivedTitle
+        let adjusted = autoCapitalizeNewLines
+            ? Self.autoCapitalizeLeading(oldText: oldTitle, newText: singleLine)
+            : singleLine
+
+        let body = notes[idx].derivedBody
+        let combined = body.isEmpty ? adjusted : "\(adjusted)\n\(body)"
+        if notes[idx].rawText != combined {
+            notes[idx].rawText = combined
             notes[idx].updatedAt = Date()
             save()
         }
+    }
+
+    func updateSelectedBody(_ newBody: String) {
+        guard let id = selectedNote?.id,
+              let idx = notes.firstIndex(where: { $0.id == id }) else { return }
+
+        let oldBody = notes[idx].derivedBody
+        let adjustedBody = autoCapitalizeNewLines
+            ? Self.autoCapitalizeAfterNewlines(oldText: oldBody, newText: newBody)
+            : newBody
+
+        let title = notes[idx].derivedTitle
+        let combined = "\(title)\n\(adjustedBody)"
+        if notes[idx].rawText != combined {
+            notes[idx].rawText = combined
+            notes[idx].updatedAt = Date()
+            save()
+        }
+    }
+
+    /// Capitalize first letter when typing or dictating via Siri at start of title.
+    static func autoCapitalizeLeading(oldText: String, newText: String) -> String {
+        guard newText.count > oldText.count,
+              let first = newText.first,
+              first.isASCII && first.isLowercase else {
+            return newText
+        }
+        // Only capitalize when starting from empty or when Siri/paste inserted a chunk
+        if oldText.isEmpty || ((newText.count - oldText.count) >= 2 && !newText.hasPrefix(oldText)) {
+            return String(first).uppercased() + newText.dropFirst()
+        }
+        return newText
+    }
+
+    /// Capitalize lowercase start of a line when newly typed or inserted via macOS Siri Dictation.
+    static func autoCapitalizeAfterNewlines(oldText: String, newText: String) -> String {
+        guard newText.count > oldText.count else { return newText }
+
+        // Find common prefix between oldText and newText
+        var commonPrefixEnd = newText.startIndex
+        var oldIdx = oldText.startIndex
+        while oldIdx < oldText.endIndex && commonPrefixEnd < newText.endIndex {
+            if oldText[oldIdx] != newText[commonPrefixEnd] { break }
+            oldIdx = oldText.index(after: oldIdx)
+            commonPrefixEnd = newText.index(after: commonPrefixEnd)
+        }
+
+        // Find common suffix from end
+        var newSuffixStart = newText.endIndex
+        var oldSuffixStart = oldText.endIndex
+        while oldSuffixStart > oldIdx && newSuffixStart > commonPrefixEnd {
+            let prevOld = oldText.index(before: oldSuffixStart)
+            let prevNew = newText.index(before: newSuffixStart)
+            if oldText[prevOld] != newText[prevNew] { break }
+            oldSuffixStart = prevOld
+            newSuffixStart = prevNew
+        }
+
+        guard commonPrefixEnd < newSuffixStart else { return newText }
+
+        var chars = Array(newText)
+        let startOffset = newText.distance(from: newText.startIndex, to: commonPrefixEnd)
+        let endOffset = newText.distance(from: newText.startIndex, to: newSuffixStart)
+
+        var modified = false
+        for pos in startOffset..<endOffset {
+            let ch = chars[pos]
+            guard ch.isASCII && ch.isLowercase else { continue }
+            let atStartOfBody = (pos == 0)
+            let rightAfterNewline = (pos > 0 && chars[pos - 1] == "\n")
+            if atStartOfBody || rightAfterNewline {
+                chars[pos] = Character(String(ch).uppercased())
+                modified = true
+            }
+        }
+        return modified ? String(chars) : newText
     }
 
     func updateSelectedOwnerAcode9(_ newCode: String) {
@@ -291,7 +391,7 @@ final class NotesStore {
         }
 
         let note = StoredNote(
-            rawText: "Untitled Note\n",
+            rawText: "\n",
             ownerAcode9: freshCode,
             folder: targetFolder,
             isPinned: false,
@@ -325,7 +425,7 @@ final class NotesStore {
     func resetSampleNotes() {
         notes = Self.makeSeedNotes()
         selectedNoteID = notes.first?.id
-        viewMode = .clean
+        viewMode = .edit
         save()
     }
 
@@ -376,7 +476,7 @@ final class NotesStore {
                 N0rma — Chamber Luncheon & Trailhead Log
                 Field note authored under Acode9 Ab2p^a40z (Jesus Clock 2p15ek).
                 Met NormA at the trailhead, confirmed coordinates with Norm4, and archived Norma4 in the AXIF ledger.
-                Tip: Turn on Aa Case-Sensitive search and search NormA, Norm4, or Norma4 right inside Clean View!
+                Tip: Turn on Aa Case-Sensitive search and search NormA, Norm4, or Norma4 — or switch to Clean View!
                 """,
                 ownerAcode9: "Ab2p^a40z",
                 folder: .chamberNorma,

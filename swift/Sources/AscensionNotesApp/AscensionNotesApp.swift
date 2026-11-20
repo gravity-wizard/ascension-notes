@@ -33,11 +33,13 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
 struct AscensionNotesApp: App {
     #if os(macOS)
     @NSApplicationDelegateAdaptor(MacAppDelegate.self) private var appDelegate
+    @Environment(\.openWindow) private var openWindow
     #endif
+    @State private var store = NotesStore()
 
     var body: some Scene {
         WindowGroup("Ascension Notes") {
-            AscensionNotesRootView()
+            AscensionNotesRootView(store: store)
                 #if os(macOS)
                 .frame(minWidth: 920, minHeight: 580)
                 .onAppear {
@@ -50,16 +52,45 @@ struct AscensionNotesApp: App {
         #if os(macOS)
         .defaultSize(width: 1120, height: 700)
         #endif
+        .commands {
+            CommandGroup(replacing: .newItem) {
+                Button("New Note") {
+                    store.createNewNote()
+                }
+                .keyboardShortcut("n", modifiers: .command)
+            }
+            CommandGroup(replacing: .help) {
+                Button("Ascension Notes Help") {
+                    #if os(macOS)
+                    openWindow(id: "help")
+                    #else
+                    store.showHelp = true
+                    #endif
+                }
+                .keyboardShortcut("?", modifiers: .command)
+            }
+        }
+
+        #if os(macOS)
+        Window("Ascension Notes Help", id: "help") {
+            HelpGuideView()
+        }
+        .defaultSize(width: 640, height: 540)
+        #endif
     }
 }
 
 struct AscensionNotesRootView: View {
-    @State private var store = NotesStore()
+    @Bindable var store: NotesStore
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var showCopiedToast: Bool = false
     @FocusState private var isFindFieldFocused: Bool
     @FocusState private var isInlineFindFocused: Bool
+    @FocusState private var isTitleFocused: Bool
     @FocusState private var isEditorFocused: Bool
+    #if os(macOS)
+    @Environment(\.openWindow) private var openWindow
+    #endif
 
     private let clockTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
@@ -75,6 +106,16 @@ struct AscensionNotesRootView: View {
         .inspector(isPresented: $store.showInspector) {
             axifInspectorDrawer
                 .inspectorColumnWidth(min: 270, ideal: 310, max: 380)
+        }
+        .sheet(isPresented: $store.showHelp) {
+            NavigationStack {
+                HelpGuideView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { store.showHelp = false }
+                        }
+                    }
+            }
         }
         .onReceive(clockTimer) { _ in
             store.refreshClock()
@@ -131,6 +172,15 @@ struct AscensionNotesRootView: View {
         .toolbar {
             ToolbarItem(placement: .automatic) {
                 Menu {
+                    Toggle("Auto-Cap New Lines (Siri)", isOn: $store.autoCapitalizeNewLines)
+                    Divider()
+                    Button("Ascension Notes Help") {
+                        #if os(macOS)
+                        openWindow(id: "help")
+                        #else
+                        store.showHelp = true
+                        #endif
+                    }
                     Button("Reset Sample Notes") {
                         store.resetSampleNotes()
                     }
@@ -206,7 +256,7 @@ struct AscensionNotesRootView: View {
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     store.createNewNote()
-                    isEditorFocused = true
+                    isTitleFocused = true
                 } label: {
                     Label("New Note", systemImage: "square.and.pencil")
                 }
@@ -296,7 +346,7 @@ struct AscensionNotesRootView: View {
                         .font(.caption2)
                         .foregroundStyle(notesGold)
                 }
-                Text(note.derivedTitle)
+                Text(note.displayTitle)
                     .font(.headline)
                     .lineLimit(1)
                 Spacer()
@@ -357,25 +407,54 @@ struct AscensionNotesRootView: View {
                 .padding(.top, 10)
                 .padding(.bottom, 4)
 
+                // Immediately editable Line-1 Title (works in both Edit and Clean View!)
+                let titleBinding = Binding(
+                    get: { store.selectedNote?.derivedTitle ?? "" },
+                    set: { store.updateSelectedTitle($0) }
+                )
+                TextField("Title", text: titleBinding)
+                    .font(.title2.bold())
+                    .textFieldStyle(.plain)
+                    .focused($isTitleFocused)
+                    .onSubmit {
+                        store.viewMode = .edit
+                        isEditorFocused = true
+                    }
+                    #if !os(macOS)
+                    .textInputAutocapitalization(.sentences)
+                    #endif
+                    .padding(.horizontal, 24)
+                    .padding(.top, 4)
+                    .padding(.bottom, 6)
+
                 if store.viewMode == .edit {
-                    let textBinding = Binding(
-                        get: { store.selectedNote?.rawText ?? "" },
-                        set: { store.updateSelectedRawText($0) }
+                    let bodyBinding = Binding(
+                        get: { store.selectedNote?.derivedBody ?? "" },
+                        set: { store.updateSelectedBody($0) }
                     )
-                    TextEditor(text: textBinding)
+                    TextEditor(text: bodyBinding)
                         .font(.system(.body))
                         .lineSpacing(5)
                         .focused($isEditorFocused)
+                        #if !os(macOS)
+                        .textInputAutocapitalization(.sentences)
+                        #endif
                         .padding(.horizontal, 20)
-                        .padding(.vertical, 8)
+                        .padding(.bottom, 8)
+
+                    if !store.query.isEmpty && !store.selectedSearchMatches.isEmpty {
+                        searchMatchesFooter
+                            .padding(.horizontal, 24)
+                            .padding(.bottom, 12)
+                    }
                 } else {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 14) {
-                            Text(highlightedCleanNoteText(for: note))
+                            Text(highlightedCleanBodyText(for: note))
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .textSelection(.enabled)
                                 .lineSpacing(6)
-                                .onTapGesture(count: 2) {
+                                .onTapGesture {
                                     store.viewMode = .edit
                                     isEditorFocused = true
                                 }
@@ -385,7 +464,7 @@ struct AscensionNotesRootView: View {
                             }
                         }
                         .padding(.horizontal, 24)
-                        .padding(.vertical, 10)
+                        .padding(.vertical, 6)
                     }
                 }
             }
@@ -399,7 +478,12 @@ struct AscensionNotesRootView: View {
                     }
                     .pickerStyle(.segmented)
                     .keyboardShortcut("e", modifiers: .command)
-                    .help("Switch Clean View / Edit MUNSC (Cmd+E)")
+                    .help("Switch Edit / Clean View (Cmd+E)")
+
+                    Toggle(isOn: $store.autoCapitalizeNewLines) {
+                        Label("Auto-Cap", systemImage: "textformat.size.larger")
+                    }
+                    .help("Auto-capitalize first letter on new lines (Siri Dictation)")
 
                     Button {
                         store.togglePin(note.id)
@@ -430,6 +514,17 @@ struct AscensionNotesRootView: View {
                     }
                     .keyboardShortcut("i", modifiers: .command)
                     .help("Show AXIF & Acode9 Inspector (Cmd+I)")
+
+                    Button {
+                        #if os(macOS)
+                        openWindow(id: "help")
+                        #else
+                        store.showHelp = true
+                        #endif
+                    } label: {
+                        Label("Help", systemImage: "questionmark.circle")
+                    }
+                    .help("Ascension Notes Help (Cmd+?)")
                 }
             }
         } else {
@@ -500,32 +595,28 @@ struct AscensionNotesRootView: View {
         .padding(.top, 8)
     }
 
-    private func highlightedCleanNoteText(for note: StoredNote) -> AttributedString {
+    private func highlightedCleanBodyText(for note: StoredNote) -> AttributedString {
         guard let doc = note.compiledDocument(urlSafeDash: store.urlSafeDash) else {
-            return AttributedString(note.rawText)
+            return AttributedString(note.derivedBody)
         }
-        let cleanText = doc.render(normalized: true)
-        var attributed = AttributedString(cleanText)
-
-        // Style Line 1 like Apple Notes' bold large title
-        if let firstNewline = cleanText.firstIndex(of: "\n") {
-            if let titleRange = Range(cleanText.startIndex..<firstNewline, in: attributed) {
-                attributed[titleRange].font = .title2.bold()
-            }
-            if let bodyRange = Range(firstNewline..<cleanText.endIndex, in: attributed) {
-                attributed[bodyRange].font = .body
-            }
-        } else {
-            attributed.font = .title2.bold()
+        let fullClean = doc.render(normalized: true)
+        guard let firstNewline = fullClean.firstIndex(of: "\n") else {
+            return AttributedString("")
         }
+        let bodyStartIdx = fullClean.index(after: firstNewline)
+        let bodyClean = String(fullClean[bodyStartIdx...])
+        let bodyStartOffset = fullClean.distance(from: fullClean.startIndex, to: bodyStartIdx)
 
-        // Highlight active search hits (including hidden MUNSCs inside Clean View)
+        var attributed = AttributedString(bodyClean)
+        attributed.font = .body
+
+        // Highlight active search hits within the body slice
         for hit in store.searchMatches(for: note) {
-            guard hit.normalizedOffset >= 0,
-                  hit.normalizedEnd <= cleanText.count,
-                  hit.normalizedOffset < hit.normalizedEnd else { continue }
-            let startIdx = cleanText.index(cleanText.startIndex, offsetBy: hit.normalizedOffset)
-            let endIdx = cleanText.index(cleanText.startIndex, offsetBy: hit.normalizedEnd)
+            let relStart = hit.normalizedOffset - bodyStartOffset
+            let relEnd = hit.normalizedEnd - bodyStartOffset
+            guard relStart >= 0, relEnd <= bodyClean.count, relStart < relEnd else { continue }
+            let startIdx = bodyClean.index(bodyClean.startIndex, offsetBy: relStart)
+            let endIdx = bodyClean.index(bodyClean.startIndex, offsetBy: relEnd)
             if let attrRange = Range(startIdx..<endIdx, in: attributed) {
                 attributed[attrRange].backgroundColor = notesGold.opacity(0.38)
             }

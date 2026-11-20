@@ -23,7 +23,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "AscensionNotesApp",
-            dependencies: ["AscensionCore"]
+            dependencies: ["AscensionCore"],
+            resources: [
+                .process("Resources")
+            ]
         ),
         .testTarget(
             name: "AscensionCoreTests",
