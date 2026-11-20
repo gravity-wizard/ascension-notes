@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# macOS & Xcode
+.DS_Store
+.swiftpm/
+swift/.build/
+swift/.swiftpm/
+*.xcuserdata
+xcuserdata/
+DerivedData/
+*.xcworkspace/xcuserdata/
