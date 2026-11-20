@@ -13,3 +13,4 @@ swift/.swiftpm/
 xcuserdata/
 DerivedData/
 *.xcworkspace/xcuserdata/
+*.xcodeproj/

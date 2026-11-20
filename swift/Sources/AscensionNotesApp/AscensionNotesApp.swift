@@ -2,347 +2,619 @@ import AscensionCore
 import Foundation
 
 #if canImport(SwiftUI)
-import Observation
+import Combine
 import SwiftUI
+#if os(macOS)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
+
+private let notesGold = Color(red: 0.90, green: 0.64, blue: 0.08)
 
 @main
 struct AscensionNotesApp: App {
     var body: some Scene {
-        WindowGroup("Ascension Notes — Hydrogen4^high-mode5") {
-            AscensionWorkspaceView()
+        WindowGroup("Ascension Notes") {
+            AscensionNotesRootView()
+                #if os(macOS)
+                .frame(minWidth: 920, minHeight: 580)
+                #endif
         }
+        #if os(macOS)
+        .defaultSize(width: 1120, height: 700)
+        #endif
     }
 }
 
-@MainActor
-@Observable
-final class NotesWorkspaceModel {
-    enum ViewLayerMode: String, CaseIterable, Identifiable {
-        case normalized = "Normalized"
-        case raw = "Raw MUNSC"
-        var id: String { rawValue }
-    }
+struct AscensionNotesRootView: View {
+    @State private var store = NotesStore()
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var showCopiedToast: Bool = false
+    @FocusState private var isFindFieldFocused: Bool
+    @FocusState private var isInlineFindFocused: Bool
+    @FocusState private var isEditorFocused: Bool
 
-    var title: String = "Summit Observation Log"
-    var ownerAcode9: String = "Ab2p^a40z"
-    var rawText: String = """
-    Field note authored under Acode9 Ab2p^a40z (Jesus Clock 2p15ek).
-    Met NormA at the trailhead, confirmed coordinates with Norm4, and archived Norma4 in the AXIF ledger.
-    Future milestone reference: Ac3x^chch and archival token Ab2p^0oyu.
-    """
-
-    var viewMode: ViewLayerMode = .normalized
-    var query: String = "NormA"
-    var caseSensitive: Bool = true
-    var wholeWord: Bool = false
-    var useRegex: Bool = false
-    var searchLayer: SearchLayer = .dual
-    var urlSafeDash: Bool = false
-    var rollingPool: [Acode9PoolEntry] = []
-
-    var document: AXIFDocument? {
-        try? AXIFDocument(
-            title: title,
-            rawText: rawText,
-            ownerAcode9: normalizedOwnerCode,
-            timestampUnix: Base38Clock.t0Unix + 210_661_380
-        )
-    }
-
-    var normalizedOwnerCode: String {
-        if urlSafeDash {
-            return (try? Acode9.toDash(ownerAcode9)) ?? ownerAcode9
-        }
-        return (try? Acode9.toCaret(ownerAcode9)) ?? ownerAcode9
-    }
-
-    var validation: Acode9ValidationResult {
-        Acode9.validate(normalizedOwnerCode, strict: true, allowDash: true)
-    }
-
-    var displayedText: String {
-        guard let doc = document else { return rawText }
-        return doc.render(normalized: viewMode == .normalized)
-    }
-
-    var searchMatches: [SearchMatch] {
-        guard let doc = document, !query.isEmpty else { return [] }
-        let options = SearchOptions(
-            caseSensitive: caseSensitive,
-            wholeWord: wholeWord,
-            regex: useRegex,
-            layer: searchLayer
-        )
-        return (try? CaseSensitiveSearch.search(document: doc, query: query, options: options)) ?? []
-    }
-
-    var searchErrorMessage: String? {
-        guard useRegex, !query.isEmpty, let doc = document else { return nil }
-        do {
-            _ = try CaseSensitiveSearch.search(
-                document: doc,
-                query: query,
-                options: SearchOptions(
-                    caseSensitive: caseSensitive,
-                    wholeWord: wholeWord,
-                    regex: true,
-                    layer: searchLayer
-                )
-            )
-            return nil
-        } catch {
-            return error.localizedDescription
-        }
-    }
-
-    func generateNextPool() {
-        let now = Int64(Date().timeIntervalSince1970)
-        rollingPool = (try? Acode9.generateRollingPool(
-            count: 6,
-            startUnixSeconds: now,
-            cadenceSeconds: 1,
-            mode: .good1a,
-            urlSafe: urlSafeDash
-        )) ?? []
-    }
-}
-
-struct AscensionWorkspaceView: View {
-    @State private var model = NotesWorkspaceModel()
+    private let clockTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        NavigationSplitView {
-            sidebarView
-                .navigationTitle("AXIF Inspector")
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            foldersSidebar
+        } content: {
+            notesListColumn
         } detail: {
-            editorAndSearchView
-                .navigationTitle(model.title)
+            noteCanvasDetail
         }
-        .onAppear {
-            if model.rollingPool.isEmpty {
-                model.generateNextPool()
+        .tint(notesGold)
+        .inspector(isPresented: $store.showInspector) {
+            axifInspectorDrawer
+                .inspectorColumnWidth(min: 270, ideal: 310, max: 380)
+        }
+        .onReceive(clockTimer) { _ in
+            store.refreshClock()
+        }
+        .onChange(of: store.sidebarFilter) { _, _ in
+            store.selectedNoteID = store.filteredNotes.first?.id
+        }
+        .onChange(of: store.selectedNoteID) { _, _ in
+            showCopiedToast = false
+        }
+    }
+
+    // MARK: - Column 1: Folders Sidebar (Apple Notes Style)
+
+    private var foldersSidebar: some View {
+        List(selection: $store.sidebarFilter) {
+            Section("Library") {
+                sidebarRow(.all)
+                sidebarRow(.pinned)
+            }
+
+            Section("Folders") {
+                ForEach(NoteFolder.allCases) { folder in
+                    sidebarRow(.folder(folder))
+                }
+            }
+
+            Section("Jesus Clock (Base-38)") {
+                HStack {
+                    Image(systemName: "clock")
+                        .foregroundStyle(notesGold)
+                    Text(store.liveClockText)
+                        .font(.system(.body, design: .monospaced).weight(.semibold))
+                    Spacer()
+                    Text("T0")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .navigationTitle("Folders")
+        .toolbar {
+            ToolbarItem(placement: .automatic) {
+                Menu {
+                    Button("Reset Sample Notes") {
+                        store.resetSampleNotes()
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
             }
         }
     }
 
-    private var editorAndSearchView: some View {
-        VStack(spacing: 12) {
-            xcodeSearchBar
+    private func sidebarRow(_ filter: SidebarFilter) -> some View {
+        HStack {
+            Label(filter.title, systemImage: filter.systemImage)
+            Spacer()
+            Text("\(store.count(for: filter))")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .tag(filter)
+    }
 
-            HStack {
-                Picker("View Layer", selection: $model.viewMode) {
-                    ForEach(NotesWorkspaceModel.ViewLayerMode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
+    // MARK: - Column 2: Searchable Notes List
+
+    private var notesListColumn: some View {
+        VStack(spacing: 0) {
+            listSearchHeader
+            Divider()
+
+            if store.filteredNotes.isEmpty {
+                ContentUnavailableView(
+                    store.query.isEmpty ? "No Notes" : "No Matches",
+                    systemImage: store.query.isEmpty ? "note.text" : "magnifyingglass",
+                    description: Text(
+                        store.query.isEmpty
+                            ? "Click + to start a new Ascension Note."
+                            : "No notes matched \"\(store.query)\" with current search options."
+                    )
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(selection: $store.selectedNoteID) {
+                    ForEach(store.filteredNotes) { note in
+                        noteRowCard(note)
+                            .tag(note.id)
+                            .contextMenu {
+                                Button {
+                                    store.togglePin(note.id)
+                                } label: {
+                                    Label(
+                                        note.isPinned ? "Unpin Note" : "Pin Note",
+                                        systemImage: note.isPinned ? "pin.slash" : "pin"
+                                    )
+                                }
+                                Divider()
+                                Button(role: .destructive) {
+                                    store.deleteNote(note.id)
+                                } label: {
+                                    Label("Delete Note", systemImage: "trash")
+                                }
+                            }
                     }
+                    .onDelete(perform: store.deleteNotes)
                 }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 260)
+                #if os(macOS)
+                .listStyle(.inset)
+                #else
+                .listStyle(.insetGrouped)
+                #endif
+            }
+        }
+        .navigationTitle(store.sidebarFilter.title)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    store.createNewNote()
+                    isEditorFocused = true
+                } label: {
+                    Label("New Note", systemImage: "square.and.pencil")
+                }
+                .keyboardShortcut("n", modifiers: .command)
+                .help("New Note (Cmd+N)")
+            }
+        }
+    }
+
+    private var listSearchHeader: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Search notes & hidden MUNSCs...", text: $store.query)
+                    .textFieldStyle(.plain)
+                    .focused($isFindFieldFocused)
+                if !store.query.isEmpty {
+                    Button {
+                        store.query = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(Color.secondary.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            HStack(spacing: 6) {
+                searchOptionPill(title: "Aa", help: "Case-Sensitive (like Xcode)", isOn: $store.caseSensitive)
+                searchOptionPill(title: "W", help: "Whole Word", isOn: $store.wholeWord)
+                searchOptionPill(title: ".*", help: "Regular Expression", isOn: $store.useRegex)
 
                 Spacer()
 
-                Text("\(model.searchMatches.count) match(es)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                Picker("Scope", selection: $store.searchLayer) {
+                    Text("Dual AXIF").tag(SearchLayer.dual)
+                    Text("Clean").tag(SearchLayer.normalized)
+                    Text("Raw").tag(SearchLayer.raw)
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .controlSize(.small)
             }
-            .padding(.horizontal)
 
-            if let errorMsg = model.searchErrorMessage {
-                Text("Regex error: \(errorMsg)")
-                    .font(.caption)
+            if let errorMsg = store.searchErrorMessage {
+                Text(errorMsg)
+                    .font(.caption2)
                     .foregroundStyle(.red)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+    }
+
+    private func searchOptionPill(title: String, help: String, isOn: Binding<Bool>) -> some View {
+        Button {
+            isOn.wrappedValue.toggle()
+        } label: {
+            Text(title)
+                .font(.system(.caption, design: .monospaced).weight(.semibold))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(isOn.wrappedValue ? notesGold.opacity(0.24) : Color.secondary.opacity(0.12))
+                .foregroundStyle(isOn.wrappedValue ? notesGold : .secondary)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(isOn.wrappedValue ? notesGold.opacity(0.7) : Color.clear, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
+    private func noteRowCard(_ note: StoredNote) -> some View {
+        let hits = store.searchMatches(for: note)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 5) {
+                if note.isPinned {
+                    Image(systemName: "pin.fill")
+                        .font(.caption2)
+                        .foregroundStyle(notesGold)
+                }
+                Text(note.derivedTitle)
+                    .font(.headline)
+                    .lineLimit(1)
+                Spacer()
+                if !store.query.isEmpty && !hits.isEmpty {
+                    Text("\(hits.count)")
+                        .font(.caption2.monospacedDigit().bold())
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(notesGold.opacity(0.22))
+                        .foregroundStyle(notesGold)
+                        .clipShape(Capsule())
+                }
             }
 
-            GroupBox(model.viewMode == .normalized ? "Normalized Output (Clean View)" : "Raw MUNSC Source") {
-                if model.viewMode == .raw {
-                    TextEditor(text: $model.rawText)
-                        .font(.system(.body, design: .monospaced))
-                        .frame(minHeight: 180)
+            HStack(spacing: 6) {
+                Text(note.updatedAt, style: .time)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(note.previewBody(normalized: true))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            HStack(spacing: 6) {
+                Text(note.ownerAcode9)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                if let doc = note.compiledDocument(), doc.axif.munscCount > 0 {
+                    Text("• \(doc.axif.munscCount) AXIF")
+                        .font(.caption2)
+                        .foregroundStyle(notesGold)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    // MARK: - Column 3: Apple Notes Writing & Clean View Canvas
+
+    @ViewBuilder
+    private var noteCanvasDetail: some View {
+        if let note = store.selectedNote {
+            VStack(spacing: 0) {
+                if store.showFindBar {
+                    inlineNoteFindStrip
+                    Divider()
+                }
+
+                // Centered Apple Notes-style date banner
+                HStack {
+                    Spacer()
+                    Text(note.updatedAt.formatted(date: .long, time: .shortened))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(.top, 10)
+                .padding(.bottom, 4)
+
+                if store.viewMode == .edit {
+                    let textBinding = Binding(
+                        get: { store.selectedNote?.rawText ?? "" },
+                        set: { store.updateSelectedRawText($0) }
+                    )
+                    TextEditor(text: textBinding)
+                        .font(.system(.body))
+                        .lineSpacing(5)
+                        .focused($isEditorFocused)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 8)
                 } else {
                     ScrollView {
-                        Text(highlightedNormalizedAttributedText)
-                            .font(.body)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .textSelection(.enabled)
-                            .padding(6)
-                    }
-                    .frame(minHeight: 180)
-                }
-            }
-            .padding(.horizontal)
-
-            GroupBox("Xcode-Style Dual-Layer Search Results") {
-                if model.searchMatches.isEmpty {
-                    Text(model.query.isEmpty ? "Enter a query to search." : "No matches found.")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 80)
-                } else {
-                    List(model.searchMatches) { hit in
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text("L\(hit.lineNumber):C\(hit.column)")
-                                    .font(.caption.monospaced())
-                                    .foregroundStyle(.secondary)
-                                Text(hit.matchedText)
-                                    .font(.system(.subheadline, design: .monospaced).bold())
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color.accentColor.opacity(0.15))
-                                    .clipShape(RoundedRectangle(cornerRadius: 4))
-                                if let entry = hit.axifEntry {
-                                    Text("→ \(entry.normalizedForm) [\(entry.munscRule)]")
-                                        .font(.caption)
-                                        .foregroundStyle(.teal)
+                        VStack(alignment: .leading, spacing: 14) {
+                            Text(highlightedCleanNoteText(for: note))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                                .lineSpacing(6)
+                                .onTapGesture(count: 2) {
+                                    store.viewMode = .edit
+                                    isEditorFocused = true
                                 }
-                                Spacer()
-                                Text(hit.layer.rawValue.uppercased())
-                                    .font(.caption2.monospaced())
-                                    .foregroundStyle(.secondary)
+
+                            if !store.query.isEmpty && !store.selectedSearchMatches.isEmpty {
+                                searchMatchesFooter
                             }
-                            Text(hit.snippet)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
                         }
-                        .padding(.vertical, 2)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 10)
                     }
-                    .frame(minHeight: 140)
                 }
             }
-            .padding([.horizontal, .bottom])
+            .navigationTitle("")
+            .toolbar {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Picker("Mode", selection: $store.viewMode) {
+                        ForEach(NotesStore.ViewLayerMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .keyboardShortcut("e", modifiers: .command)
+                    .help("Switch Clean View / Edit MUNSC (Cmd+E)")
+
+                    Button {
+                        store.togglePin(note.id)
+                    } label: {
+                        Label(
+                            note.isPinned ? "Unpin" : "Pin",
+                            systemImage: note.isPinned ? "pin.fill" : "pin"
+                        )
+                    }
+
+                    Button {
+                        withAnimation {
+                            store.showFindBar.toggle()
+                        }
+                        if store.showFindBar {
+                            isInlineFindFocused = true
+                        }
+                    } label: {
+                        Label("Find", systemImage: "magnifyingglass")
+                    }
+                    .keyboardShortcut("f", modifiers: .command)
+                    .help("Find in Note (Cmd+F)")
+
+                    Button {
+                        store.showInspector.toggle()
+                    } label: {
+                        Label("AXIF Inspector", systemImage: "info.circle")
+                    }
+                    .keyboardShortcut("i", modifiers: .command)
+                    .help("Show AXIF & Acode9 Inspector (Cmd+I)")
+                }
+            }
+        } else {
+            ContentUnavailableView(
+                "Select a Note",
+                systemImage: "note.text",
+                description: Text("Choose a note on the left or press Cmd+N to create one.")
+            )
+        }
+    }
+
+    private var inlineNoteFindStrip: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "text.magnifyingglass")
+                .foregroundStyle(notesGold)
+            TextField("Find in notes (e.g. NormA, Norm4, Norma4)...", text: $store.query)
+                .textFieldStyle(.roundedBorder)
+                .focused($isInlineFindFocused)
+            searchOptionPill(title: "Aa", help: "Case-Sensitive", isOn: $store.caseSensitive)
+            searchOptionPill(title: "W", help: "Whole Word", isOn: $store.wholeWord)
+            searchOptionPill(title: ".*", help: "Regex", isOn: $store.useRegex)
+
+            Text("\(store.selectedSearchMatches.count) hit(s)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+
+            Button {
+                withAnimation {
+                    store.showFindBar = false
+                }
+            } label: {
+                Text("Done")
+                    .font(.caption.weight(.medium))
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Color.secondary.opacity(0.06))
+    }
+
+    private var searchMatchesFooter: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider()
+            Text("AXIF Search Matches (\(store.selectedSearchMatches.count))")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            ForEach(store.selectedSearchMatches) { hit in
+                HStack(spacing: 8) {
+                    Text("L\(hit.lineNumber):C\(hit.column)")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                    Text(hit.matchedText)
+                        .font(.caption.monospaced().bold())
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(notesGold.opacity(0.22))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                    if let entry = hit.axifEntry {
+                        Text("→ \(entry.normalizedForm) (\(entry.munscRule))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+            }
         }
         .padding(.top, 8)
     }
 
-    private var xcodeSearchBar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-
-            TextField("Find (NormA, Norm4, Norma4, Norma...)", text: $model.query)
-                .textFieldStyle(.roundedBorder)
-
-            Toggle(isOn: $model.caseSensitive) {
-                Text("Aa")
-                    .font(.system(.caption, design: .monospaced).bold())
-            }
-            .toggleStyle(.button)
-            .help("Case-Sensitive (Xcode Aa)")
-
-            Toggle(isOn: $model.wholeWord) {
-                Text("W")
-                    .font(.system(.caption, design: .monospaced).bold())
-            }
-            .toggleStyle(.button)
-            .help("Whole Word")
-
-            Toggle(isOn: $model.useRegex) {
-                Text(".*")
-                    .font(.system(.caption, design: .monospaced).bold())
-            }
-            .toggleStyle(.button)
-            .help("Regular Expression")
-
-            Picker("Layer", selection: $model.searchLayer) {
-                Text("Dual AXIF").tag(SearchLayer.dual)
-                Text("Normalized").tag(SearchLayer.normalized)
-                Text("Raw MUNSC").tag(SearchLayer.raw)
-            }
-            .frame(maxWidth: 130)
+    private func highlightedCleanNoteText(for note: StoredNote) -> AttributedString {
+        guard let doc = note.compiledDocument(urlSafeDash: store.urlSafeDash) else {
+            return AttributedString(note.rawText)
         }
-        .padding(.horizontal)
-    }
+        let cleanText = doc.render(normalized: true)
+        var attributed = AttributedString(cleanText)
 
-    private var sidebarView: some View {
-        List {
-            Section("Owner Acode9") {
-                HStack {
-                    TextField("Owner Acode9", text: $model.ownerAcode9)
-                        .font(.system(.body, design: .monospaced))
-                    Toggle("URL -", isOn: $model.urlSafeDash)
-                        .toggleStyle(.button)
-                }
-                HStack {
-                    Label(
-                        model.validation.valid ? "Valid good1a" : "Check Failed",
-                        systemImage: model.validation.valid ? "checkmark.seal.fill" : "exclamationmark.triangle.fill"
-                    )
-                    .foregroundStyle(model.validation.valid ? .green : .orange)
-                    .font(.caption)
-                    Spacer()
-                    Text(model.normalizedOwnerCode)
-                        .font(.caption.monospaced())
-                }
-                if let doc = model.document {
-                    LabeledContent("Jesus Clock", value: doc.axif.jesusClock)
-                        .font(.caption.monospaced())
-                    LabeledContent("MUNSC Count", value: "\(doc.axif.munscCount)")
-                        .font(.caption.monospaced())
-                }
+        // Style Line 1 like Apple Notes' bold large title
+        if let firstNewline = cleanText.firstIndex(of: "\n") {
+            if let titleRange = Range(cleanText.startIndex..<firstNewline, in: attributed) {
+                attributed[titleRange].font = .title2.bold()
             }
-
-            Section("AXIF Metadata Index") {
-                if let entries = model.document?.axif.entries, !entries.isEmpty {
-                    ForEach(entries) { entry in
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack {
-                                Text(entry.token)
-                                    .font(.system(.subheadline, design: .monospaced).bold())
-                                Text("→")
-                                    .foregroundStyle(.secondary)
-                                Text(entry.normalizedForm)
-                                    .font(.subheadline)
-                                Spacer()
-                                Text("@\(entry.offset)")
-                                    .font(.caption.monospaced())
-                                    .foregroundStyle(.secondary)
-                            }
-                            Text("\(entry.acode9) • \(entry.munscRule)")
-                                .font(.caption2.monospaced())
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                } else {
-                    Text("No MUNSC entries indexed.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+            if let bodyRange = Range(firstNewline..<cleanText.endIndex, in: attributed) {
+                attributed[bodyRange].font = .body
             }
-
-            Section {
-                Button("Generate 1s Rolling Pool") {
-                    model.generateNextPool()
-                }
-                ForEach(model.rollingPool) { item in
-                    HStack {
-                        Text(item.acode9)
-                            .font(.caption.monospaced())
-                        Spacer()
-                        Text(item.jesusClock)
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            } header: {
-                Text("1s Cadence Pool (good1a)")
-            }
+        } else {
+            attributed.font = .title2.bold()
         }
-    }
 
-    private var highlightedNormalizedAttributedText: AttributedString {
-        let base = model.displayedText
-        var attributed = AttributedString(base)
-        for hit in model.searchMatches {
+        // Highlight active search hits (including hidden MUNSCs inside Clean View)
+        for hit in store.searchMatches(for: note) {
             guard hit.normalizedOffset >= 0,
-                  hit.normalizedEnd <= base.count,
+                  hit.normalizedEnd <= cleanText.count,
                   hit.normalizedOffset < hit.normalizedEnd else { continue }
-            let startStrIdx = base.index(base.startIndex, offsetBy: hit.normalizedOffset)
-            let endStrIdx = base.index(base.startIndex, offsetBy: hit.normalizedEnd)
-            if let attrRange = Range(startStrIdx..<endStrIdx, in: attributed) {
-                attributed[attrRange].backgroundColor = Color.yellow.opacity(0.35)
+            let startIdx = cleanText.index(cleanText.startIndex, offsetBy: hit.normalizedOffset)
+            let endIdx = cleanText.index(cleanText.startIndex, offsetBy: hit.normalizedEnd)
+            if let attrRange = Range(startIdx..<endIdx, in: attributed) {
+                attributed[attrRange].backgroundColor = notesGold.opacity(0.38)
             }
         }
         return attributed
+    }
+
+    // MARK: - Collapsible Right Drawer: AXIF & Acode9 Inspector
+
+    private var axifInspectorDrawer: some View {
+        List {
+            if let note = store.selectedNote {
+                Section("Note Filing & Owner Acode9") {
+                    Picker(
+                        "Folder",
+                        selection: Binding(
+                            get: { note.folder },
+                            set: { store.updateSelectedFolder($0) }
+                        )
+                    ) {
+                        ForEach(NoteFolder.allCases) { f in
+                            Text(f.rawValue).tag(f)
+                        }
+                    }
+
+                    HStack {
+                        TextField(
+                            "Acode9",
+                            text: Binding(
+                                get: { note.ownerAcode9 },
+                                set: { store.updateSelectedOwnerAcode9($0) }
+                            )
+                        )
+                        .font(.system(.body, design: .monospaced))
+                        .textFieldStyle(.roundedBorder)
+
+                        Toggle("-", isOn: $store.urlSafeDash)
+                            .toggleStyle(.button)
+                            .help("Toggle Caret ^ / Dash - URL-safe mode")
+                    }
+
+                    let validation = Acode9.validate(note.ownerAcode9, strict: true, allowDash: true)
+                    Label(
+                        validation.valid ? "Valid good1a Acode9" : (validation.reasons.first ?? "Check Acode9"),
+                        systemImage: validation.valid ? "checkmark.seal.fill" : "info.circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(validation.valid ? .green : .orange)
+                }
+
+                if let doc = store.selectedDocument {
+                    Section("AXIF Metadata Layer") {
+                        LabeledContent("Version", value: doc.axif.version)
+                        LabeledContent("Jesus Clock", value: doc.axif.jesusClock)
+                        LabeledContent("Hidden MUNSCs", value: "\(doc.axif.munscCount)")
+
+                        Button {
+                            if let json = try? doc.axif.toJSON(prettyPrinted: true) {
+                                copyToClipboard(json)
+                                showCopiedToast = true
+                            }
+                        } label: {
+                            Label(
+                                showCopiedToast ? "Copied AXIF JSON!" : "Copy Shareable AXIF JSON",
+                                systemImage: showCopiedToast ? "checkmark" : "doc.on.doc"
+                            )
+                        }
+                    }
+
+                    Section("Indexed MUNSC Tokens") {
+                        if doc.axif.entries.isEmpty {
+                            Text("No MUNSC tokens detected in this note yet.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(doc.axif.entries) { entry in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack {
+                                        Text(entry.token)
+                                            .font(.system(.subheadline, design: .monospaced).bold())
+                                        Text("→")
+                                            .foregroundStyle(.secondary)
+                                        Text(entry.normalizedForm)
+                                        Spacer()
+                                        Text("@\(entry.offset)")
+                                            .font(.caption2.monospaced())
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Text(entry.munscRule)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Section("1s Cadence Acode9 Pool") {
+                    Button("Mint Fresh Batch") {
+                        store.generateNextPool()
+                    }
+                    ForEach(store.rollingPool) { entry in
+                        HStack {
+                            Text(entry.acode9)
+                                .font(.caption.monospaced())
+                            Spacer()
+                            Button("Assign") {
+                                store.updateSelectedOwnerAcode9(entry.acode9)
+                            }
+                            .font(.caption2)
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle("AXIF Inspector")
+    }
+
+    private func copyToClipboard(_ text: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        #elseif canImport(UIKit)
+        UIPasteboard.general.string = text
+        #endif
     }
 }
 #else
