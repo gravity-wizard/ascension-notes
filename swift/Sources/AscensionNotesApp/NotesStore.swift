@@ -143,6 +143,8 @@ final class NotesStore {
     var showInspector: Bool = false
     var showHelp: Bool = false
     var autoCapitalizeNewLines: Bool = true
+    var spellcheckCleanView: Bool = true
+    var spellcheckRevision: Int = 0
 
     var query: String = ""
     var caseSensitive: Bool = true
@@ -359,6 +361,30 @@ final class NotesStore {
         notes[idx].ownerAcode9 = newCode
         notes[idx].updatedAt = Date()
         save()
+    }
+
+    func replaceNormalizedSpan(normOffset: Int, normEnd: Int, with replacement: String) {
+        guard let note = selectedNote,
+              let doc = note.compiledDocument(urlSafeDash: urlSafeDash),
+              let idx = notes.firstIndex(where: { $0.id == note.id }) else { return }
+        let rawSpan = doc.mapNormalizedSpanToRaw(start: normOffset, end: normEnd)
+        let raw = notes[idx].rawText
+        guard rawSpan.start >= 0,
+              rawSpan.end <= raw.count,
+              rawSpan.start <= rawSpan.end else { return }
+        let sIdx = raw.index(raw.startIndex, offsetBy: rawSpan.start)
+        let eIdx = raw.index(raw.startIndex, offsetBy: rawSpan.end)
+        var updated = raw
+        updated.replaceSubrange(sIdx..<eIdx, with: replacement)
+        notes[idx].rawText = updated
+        notes[idx].updatedAt = Date()
+        spellcheckRevision += 1
+        save()
+    }
+
+    func learnSpellcheckWord(_ word: String) {
+        SpellcheckHelper.learnWord(word)
+        spellcheckRevision += 1
     }
 
     func updateSelectedFolder(_ folder: NoteFolder) {

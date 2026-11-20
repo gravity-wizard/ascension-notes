@@ -24,12 +24,12 @@ struct HelpGuideView: View {
 
                 helpSection(
                     icon: "square.and.pencil",
-                    title: "Apple Notes Editing & Siri Auto-Cap",
+                    title: "Apple Notes Editing, Siri Auto-Cap & Clean View Spellcheck",
                     bullets: [
                         "Open any note and edit the large Line-1 Title or body immediately—changes auto-save to Application Support.",
                         "Press Cmd + N for a new note (automatically mints a fresh good1a Acode9 from the live Base-38 Jesus Clock).",
                         "Auto-Cap New Lines (ON by default) capitalizes the first letter of new lines for both typing and Siri Dictation on macOS & iOS.",
-                        "Toggle Edit / Clean View (Cmd + E) to preview normalized text where NormA, Norm4, and Norma4 render cleanly as Norma."
+                        "Clean View (Cmd + E) normalizes NormA, Norm4, and Norma4 to Norma AND runs live Apple spellcheck with red dotted underlines and 1-click Fix / Learn Word so Ascenders can spot typos right away."
                     ]
                 )
 
@@ -53,11 +53,20 @@ struct HelpGuideView: View {
                         "Press Cmd + I to open the AXIF Inspector drawer, inspect MUNSC offsets, copy shareable AXIF JSON, or mint a 1-second rolling pool."
                     ]
                 )
+
+                helpSection(
+                    icon: "folder.badge.gearshape",
+                    title: "Where Help Text Lives During Development",
+                    bullets: [
+                        "In this app, help text lives directly in swift/Sources/AscensionNotesApp/HelpGuideView.swift (cross-platform macOS + iOS, instant rebuild with zero Apple Help Viewer cache lag).",
+                        "Traditional macOS-only Help Books live in a Resources/<App>.help HTML bundle indexed by hiutil and wired via CFBundleHelpBookFolder in Info.plist."
+                    ]
+                )
             }
             .padding(24)
         }
         #if os(macOS)
-        .frame(minWidth: 560, minHeight: 460)
+        .frame(minWidth: 560, minHeight: 480)
         #endif
     }
 

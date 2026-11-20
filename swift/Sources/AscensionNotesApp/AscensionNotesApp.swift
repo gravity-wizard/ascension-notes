@@ -435,6 +435,7 @@ struct AscensionNotesRootView: View {
                     TextEditor(text: bodyBinding)
                         .font(.system(.body))
                         .lineSpacing(5)
+                        .autocorrectionDisabled(false)
                         .focused($isEditorFocused)
                         #if !os(macOS)
                         .textInputAutocapitalization(.sentences)
@@ -450,7 +451,9 @@ struct AscensionNotesRootView: View {
                 } else {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 14) {
-                            Text(highlightedCleanBodyText(for: note))
+                            let cleanBodyIssues = store.spellcheckCleanView ? cleanViewSpellIssues(for: note) : []
+
+                            Text(highlightedCleanBodyText(for: note, spellIssues: cleanBodyIssues))
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .textSelection(.enabled)
                                 .lineSpacing(6)
@@ -458,6 +461,10 @@ struct AscensionNotesRootView: View {
                                     store.viewMode = .edit
                                     isEditorFocused = true
                                 }
+
+                            if store.spellcheckCleanView && !cleanBodyIssues.isEmpty {
+                                cleanViewSpellcheckTray(issues: cleanBodyIssues, note: note)
+                            }
 
                             if !store.query.isEmpty && !store.selectedSearchMatches.isEmpty {
                                 searchMatchesFooter
@@ -484,6 +491,11 @@ struct AscensionNotesRootView: View {
                         Label("Auto-Cap", systemImage: "textformat.size.larger")
                     }
                     .help("Auto-capitalize first letter on new lines (Siri Dictation)")
+
+                    Toggle(isOn: $store.spellcheckCleanView) {
+                        Label("Spellcheck", systemImage: "text.badge.checkmark")
+                    }
+                    .help("Spellcheck Clean View so Ascenders see typos needing fixes")
 
                     Button {
                         store.togglePin(note.id)
@@ -595,20 +607,95 @@ struct AscensionNotesRootView: View {
         .padding(.top, 8)
     }
 
-    private func highlightedCleanBodyText(for note: StoredNote) -> AttributedString {
+    private func cleanViewBodySlice(for note: StoredNote) -> (bodyClean: String, bodyStartOffset: Int) {
         guard let doc = note.compiledDocument(urlSafeDash: store.urlSafeDash) else {
-            return AttributedString(note.derivedBody)
+            return (note.derivedBody, note.derivedTitle.count + 1)
         }
         let fullClean = doc.render(normalized: true)
         guard let firstNewline = fullClean.firstIndex(of: "\n") else {
-            return AttributedString("")
+            return ("", fullClean.count)
         }
         let bodyStartIdx = fullClean.index(after: firstNewline)
         let bodyClean = String(fullClean[bodyStartIdx...])
         let bodyStartOffset = fullClean.distance(from: fullClean.startIndex, to: bodyStartIdx)
+        return (bodyClean, bodyStartOffset)
+    }
+
+    private func cleanViewSpellIssues(for note: StoredNote) -> [SpellcheckIssue] {
+        _ = store.spellcheckRevision
+        let (bodyClean, _) = cleanViewBodySlice(for: note)
+        return SpellcheckHelper.findIssues(in: bodyClean)
+    }
+
+    private func cleanViewSpellcheckTray(issues: [SpellcheckIssue], note: StoredNote) -> some View {
+        let (_, bodyStartOffset) = cleanViewBodySlice(for: note)
+        return VStack(alignment: .leading, spacing: 8) {
+            Divider()
+            HStack {
+                Label("Clean View Spellcheck (\(issues.count) flagged)", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.red)
+                Spacer()
+                Text("Click a suggestion to fix or Learn into Apple Dictionary")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(issues) { issue in
+                HStack(spacing: 8) {
+                    Text(issue.word)
+                        .font(.caption.monospaced().bold())
+                        .underline(true, color: .red)
+                        .foregroundStyle(.red)
+
+                    if issue.guesses.isEmpty {
+                        Text("(no guess)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(issue.guesses, id: \.self) { guess in
+                            Button(guess) {
+                                store.replaceNormalizedSpan(
+                                    normOffset: bodyStartOffset + issue.charOffset,
+                                    normEnd: bodyStartOffset + issue.charEnd,
+                                    with: guess
+                                )
+                            }
+                            .font(.caption2)
+                            .buttonStyle(.bordered)
+                        }
+                    }
+
+                    Spacer()
+
+                    Button("Learn") {
+                        store.learnSpellcheckWord(issue.word)
+                    }
+                    .font(.caption2)
+                    .buttonStyle(.borderless)
+                }
+            }
+        }
+        .padding(.top, 6)
+    }
+
+    private func highlightedCleanBodyText(for note: StoredNote, spellIssues: [SpellcheckIssue]) -> AttributedString {
+        let (bodyClean, bodyStartOffset) = cleanViewBodySlice(for: note)
 
         var attributed = AttributedString(bodyClean)
         attributed.font = .body
+
+        // Underline misspelled words in Clean View with red dotted squiggle
+        for issue in spellIssues {
+            guard issue.charOffset >= 0,
+                  issue.charEnd <= bodyClean.count,
+                  issue.charOffset < issue.charEnd else { continue }
+            let startIdx = bodyClean.index(bodyClean.startIndex, offsetBy: issue.charOffset)
+            let endIdx = bodyClean.index(bodyClean.startIndex, offsetBy: issue.charEnd)
+            if let attrRange = Range(startIdx..<endIdx, in: attributed) {
+                attributed[attrRange].underlineStyle = Text.LineStyle(pattern: .dot, color: .red)
+            }
+        }
 
         // Highlight active search hits within the body slice
         for hit in store.searchMatches(for: note) {
