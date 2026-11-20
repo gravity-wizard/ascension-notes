@@ -37,6 +37,9 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         MARKETING_VERSION: "1.0.0"
         CURRENT_PROJECT_VERSION: "1"
+    scheme:
+      testTargets:
+        - AscensionCoreTests
 
   AscensionCoreTests:
     type: bundle.unit-test
