@@ -354,12 +354,6 @@ struct UnifiedNoteTextView: NSViewRepresentable {
 
             let foldFont = NSFont.monospacedSystemFont(ofSize: max(11.0, store.editorFontSize - 1.5), weight: .semibold)
             let foldBg = NSColor.systemYellow.withAlphaComponent(0.22)
-            let clampedRanges = tv.selectedRanges.compactMap { val -> NSValue? in
-                let r = val.rangeValue
-                let loc = min(max(0, r.location), len)
-                let maxLen = max(0, len - loc)
-                return NSValue(range: NSRange(location: loc, length: min(r.length, maxLen)))
-            }
 
             let line1 = ns.lineRange(for: NSRange(location: 0, length: 0))
             storage.beginEditing()
