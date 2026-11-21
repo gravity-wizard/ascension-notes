@@ -58,6 +58,11 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
     public var isPinned: Bool
     public var createdAt: Date
     public var updatedAt: Date
+    public var foldedBlocks: [String: String]
+
+    enum CodingKeys: String, CodingKey {
+        case id, rawText, ownerAcode9, folder, isPinned, createdAt, updatedAt, foldedBlocks
+    }
 
     public init(
         id: UUID = UUID(),
@@ -66,7 +71,8 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
         folder: NoteFolder = .quickNotes,
         isPinned: Bool = false,
         createdAt: Date = Date(),
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        foldedBlocks: [String: String] = [:]
     ) {
         self.id = id
         self.rawText = rawText
@@ -75,15 +81,27 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
         self.isPinned = isPinned
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.foldedBlocks = foldedBlocks
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        rawText = try c.decode(String.self, forKey: .rawText)
+        ownerAcode9 = try c.decode(String.self, forKey: .ownerAcode9)
+        folder = try c.decodeIfPresent(NoteFolder.self, forKey: .folder) ?? .quickNotes
+        isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
+        foldedBlocks = try c.decodeIfPresent([String: String].self, forKey: .foldedBlocks) ?? [:]
     }
 
     /// Apple Notes convention: Line 1 is the note title.
     public var derivedTitle: String {
-        let firstLine = rawText
+        rawText
             .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
             .first
             .map { String($0) } ?? ""
-        return firstLine
     }
 
     public var displayTitle: String {
@@ -99,6 +117,16 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
         return String(rawText[rawText.index(after: nl)...])
     }
 
+    /// Expands any folded block tokens before AXIF indexing & Clean View rendering.
+    public var expandedRawText: String {
+        guard !foldedBlocks.isEmpty else { return rawText }
+        var out = rawText
+        for (marker, original) in foldedBlocks {
+            out = out.replacingOccurrences(of: marker, with: original)
+        }
+        return out
+    }
+
     public func compiledDocument(urlSafeDash: Bool = false) -> AXIFDocument? {
         let normalizedCode: String
         if urlSafeDash {
@@ -108,14 +136,14 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
         }
         return try? AXIFDocument(
             title: displayTitle,
-            rawText: rawText,
+            rawText: expandedRawText,
             ownerAcode9: normalizedCode,
             timestampUnix: Int64(updatedAt.timeIntervalSince1970)
         )
     }
 
     public func previewBody(normalized: Bool = true) -> String {
-        let text = compiledDocument()?.render(normalized: normalized) ?? rawText
+        let text = compiledDocument()?.render(normalized: normalized) ?? expandedRawText
         let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
         if lines.count <= 1 {
             return "No additional text"
@@ -137,14 +165,14 @@ final class NotesStore {
     var sidebarFilter: SidebarFilter = .all
     var selectedNoteID: UUID?
 
-    /// Default to live editing like Apple Notes so opening any note allows immediate Title & Body changes.
     var viewMode: ViewLayerMode = .edit
     var showFindBar: Bool = false
     var showInspector: Bool = false
     var showHelp: Bool = false
-    var autoCapitalizeNewLines: Bool = true
+    var autoCapitalizeNewLines: Bool = false
     var spellcheckCleanView: Bool = true
     var spellcheckRevision: Int = 0
+    var editorFontSize: Double = 15.0
 
     var query: String = ""
     var caseSensitive: Bool = true
@@ -157,13 +185,19 @@ final class NotesStore {
     var liveClockText: String = Base38Clock.jesusClock(minWidth: 2)
 
     private let storageURL: URL
+    private let backupURL: URL
 
     init() {
         let appSupport = URL.applicationSupportDirectory.appendingPathComponent("AscensionNotes", isDirectory: true)
         self.storageURL = appSupport.appendingPathComponent("notes.json")
+        self.backupURL = appSupport.appendingPathComponent("notes.backup.json")
         loadOrSeed()
         refreshClock()
         generateNextPool()
+    }
+
+    var storageFolderPath: String {
+        storageURL.deletingLastPathComponent().path
     }
 
     var selectedNote: StoredNote? {
@@ -260,6 +294,28 @@ final class NotesStore {
         }
     }
 
+    func expandEditorFontSize() {
+        editorFontSize = min(32.0, editorFontSize + 1.5)
+    }
+
+    func shrinkEditorFontSize() {
+        editorFontSize = max(11.0, editorFontSize - 1.5)
+    }
+
+    func resetEditorFontSize() {
+        editorFontSize = 15.0
+    }
+
+    func updateSelectedFullText(_ newText: String) {
+        guard let id = selectedNote?.id,
+              let idx = notes.firstIndex(where: { $0.id == id }) else { return }
+        if notes[idx].rawText != newText {
+            notes[idx].rawText = newText
+            notes[idx].updatedAt = Date()
+            save()
+        }
+    }
+
     func updateSelectedTitle(_ newTitle: String) {
         guard let id = selectedNote?.id,
               let idx = notes.firstIndex(where: { $0.id == id }) else { return }
@@ -297,25 +353,73 @@ final class NotesStore {
         }
     }
 
-    /// Capitalize first letter when typing or dictating via Siri at start of title.
+    /// Fold a selected text span into a lossless placeholder marker stored on the note.
+    func foldBlock(rangeInRaw nsRange: NSRange) -> String? {
+        guard let id = selectedNote?.id,
+              let idx = notes.firstIndex(where: { $0.id == id }),
+              nsRange.length > 0 else { return nil }
+        let raw = notes[idx].rawText
+        guard let swiftRange = Range(nsRange, in: raw) else { return nil }
+        let block = String(raw[swiftRange])
+        guard !block.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+
+        let lineCount = max(1, block.split(separator: "\n", omittingEmptySubsequences: false).count)
+        let firstLine = block
+            .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map { String($0).trimmingCharacters(in: .whitespaces) } ?? "Block"
+        let snippet = String(firstLine.prefix(24)).replacingOccurrences(of: "]", with: ")")
+        let shortId = String(UUID().uuidString.prefix(4)).lowercased()
+        let marker = "▸[Folded \(lineCount)L: \(snippet)… #\(shortId)]"
+
+        var updated = raw
+        updated.replaceSubrange(swiftRange, with: marker)
+        notes[idx].foldedBlocks[marker] = block
+        notes[idx].rawText = updated
+        notes[idx].updatedAt = Date()
+        save()
+        return updated
+    }
+
+    /// Unfold a specific folded marker back into rawText.
+    func unfoldMarker(_ marker: String) -> String? {
+        guard let id = selectedNote?.id,
+              let idx = notes.firstIndex(where: { $0.id == id }),
+              let original = notes[idx].foldedBlocks.removeValue(forKey: marker) else { return nil }
+        let updated = notes[idx].rawText.replacingOccurrences(of: marker, with: original)
+        notes[idx].rawText = updated
+        notes[idx].updatedAt = Date()
+        save()
+        return updated
+    }
+
+    func unfoldAllBlocksInSelectedNote() -> String? {
+        guard let id = selectedNote?.id,
+              let idx = notes.firstIndex(where: { $0.id == id }),
+              !notes[idx].foldedBlocks.isEmpty else { return nil }
+        let expanded = notes[idx].expandedRawText
+        notes[idx].foldedBlocks.removeAll()
+        notes[idx].rawText = expanded
+        notes[idx].updatedAt = Date()
+        save()
+        return expanded
+    }
+
     static func autoCapitalizeLeading(oldText: String, newText: String) -> String {
         guard newText.count > oldText.count,
               let first = newText.first,
               first.isASCII && first.isLowercase else {
             return newText
         }
-        // Only capitalize when starting from empty or when Siri/paste inserted a chunk
         if oldText.isEmpty || ((newText.count - oldText.count) >= 2 && !newText.hasPrefix(oldText)) {
             return String(first).uppercased() + newText.dropFirst()
         }
         return newText
     }
 
-    /// Capitalize lowercase start of a line when newly typed or inserted via macOS Siri Dictation.
     static func autoCapitalizeAfterNewlines(oldText: String, newText: String) -> String {
         guard newText.count > oldText.count else { return newText }
 
-        // Find common prefix between oldText and newText
         var commonPrefixEnd = newText.startIndex
         var oldIdx = oldText.startIndex
         while oldIdx < oldText.endIndex && commonPrefixEnd < newText.endIndex {
@@ -324,7 +428,6 @@ final class NotesStore {
             commonPrefixEnd = newText.index(after: commonPrefixEnd)
         }
 
-        // Find common suffix from end
         var newSuffixStart = newText.endIndex
         var oldSuffixStart = oldText.endIndex
         while oldSuffixStart > oldIdx && newSuffixStart > commonPrefixEnd {
@@ -367,6 +470,13 @@ final class NotesStore {
         guard let note = selectedNote,
               let doc = note.compiledDocument(urlSafeDash: urlSafeDash),
               let idx = notes.firstIndex(where: { $0.id == note.id }) else { return }
+
+        // Expand folds first so normalized spans align with rawText
+        if !notes[idx].foldedBlocks.isEmpty {
+            notes[idx].rawText = notes[idx].expandedRawText
+            notes[idx].foldedBlocks.removeAll()
+        }
+
         let rawSpan = doc.mapNormalizedSpanToRaw(start: normOffset, end: normEnd)
         let raw = notes[idx].rawText
         guard rawSpan.start >= 0,
@@ -471,12 +581,14 @@ final class NotesStore {
     }
 
     func loadOrSeed() {
-        if let data = try? Data(contentsOf: storageURL),
-           let decoded = try? JSONDecoder().decode([StoredNote].self, from: data),
-           !decoded.isEmpty {
-            notes = decoded
-            selectedNoteID = filteredNotes.first?.id
-            return
+        for candidateURL in [storageURL, backupURL] {
+            if let data = try? Data(contentsOf: candidateURL),
+               let decoded = try? JSONDecoder().decode([StoredNote].self, from: data),
+               !decoded.isEmpty {
+                notes = decoded
+                selectedNoteID = filteredNotes.first?.id
+                return
+            }
         }
         notes = Self.makeSeedNotes()
         selectedNoteID = notes.first?.id
@@ -487,6 +599,9 @@ final class NotesStore {
         let dir = storageURL.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         if let data = try? JSONEncoder().encode(notes) {
+            if FileManager.default.fileExists(atPath: storageURL.path) {
+                try? FileManager.default.copyItem(at: storageURL, to: backupURL)
+            }
             try? data.write(to: storageURL, options: .atomic)
         }
     }

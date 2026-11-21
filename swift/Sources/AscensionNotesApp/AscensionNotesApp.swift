@@ -15,6 +15,8 @@ private let notesGold = Color(red: 0.90, green: 0.64, blue: 0.08)
 #if os(macOS)
 @MainActor
 final class MacAppDelegate: NSObject, NSApplicationDelegate {
+    var onWillTerminate: (() -> Void)?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
@@ -25,6 +27,10 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
             sender.windows.first?.makeKeyAndOrderFront(nil)
         }
         return true
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        onWillTerminate?()
     }
 }
 #endif
@@ -43,6 +49,10 @@ struct AscensionNotesApp: App {
                 #if os(macOS)
                 .frame(minWidth: 920, minHeight: 580)
                 .onAppear {
+                    let currentStore = store
+                    appDelegate.onWillTerminate = { [weak currentStore] in
+                        currentStore?.save()
+                    }
                     NSApplication.shared.setActivationPolicy(.regular)
                     NSApplication.shared.activate(ignoringOtherApps: true)
                     NSApp.windows.first?.makeKeyAndOrderFront(nil)
@@ -58,6 +68,45 @@ struct AscensionNotesApp: App {
                     store.createNewNote()
                 }
                 .keyboardShortcut("n", modifiers: .command)
+            }
+            CommandGroup(after: .textFormatting) {
+                Button("Expand / Zoom In") {
+                    #if os(macOS)
+                    if !NSApp.sendAction(#selector(AscensionNSTextView.expandTextSize(_:)), to: nil, from: nil) {
+                        store.expandEditorFontSize()
+                    }
+                    #else
+                    store.expandEditorFontSize()
+                    #endif
+                }
+                .keyboardShortcut("+", modifiers: .command)
+
+                Button("Expand (=)") {
+                    #if os(macOS)
+                    if !NSApp.sendAction(#selector(AscensionNSTextView.expandTextSize(_:)), to: nil, from: nil) {
+                        store.expandEditorFontSize()
+                    }
+                    #else
+                    store.expandEditorFontSize()
+                    #endif
+                }
+                .keyboardShortcut("=", modifiers: .command)
+
+                Button("Shrink / Fold Block") {
+                    #if os(macOS)
+                    if !NSApp.sendAction(#selector(AscensionNSTextView.shrinkTextSize(_:)), to: nil, from: nil) {
+                        store.shrinkEditorFontSize()
+                    }
+                    #else
+                    store.shrinkEditorFontSize()
+                    #endif
+                }
+                .keyboardShortcut("-", modifiers: .command)
+
+                Button("Reset Text Size") {
+                    store.resetEditorFontSize()
+                }
+                .keyboardShortcut("0", modifiers: .command)
             }
             CommandGroup(replacing: .help) {
                 Button("Ascension Notes Help") {
@@ -172,7 +221,7 @@ struct AscensionNotesRootView: View {
         .toolbar {
             ToolbarItem(placement: .automatic) {
                 Menu {
-                    Toggle("Auto-Cap New Lines (Siri)", isOn: $store.autoCapitalizeNewLines)
+                    Toggle("Auto-Cap / Autocorrect", isOn: $store.autoCapitalizeNewLines)
                     Divider()
                     Button("Ascension Notes Help") {
                         #if os(macOS)
@@ -407,41 +456,44 @@ struct AscensionNotesRootView: View {
                 .padding(.top, 10)
                 .padding(.bottom, 4)
 
-                // Immediately editable Line-1 Title (works in both Edit and Clean View!)
-                let titleBinding = Binding(
-                    get: { store.selectedNote?.derivedTitle ?? "" },
-                    set: { store.updateSelectedTitle($0) }
-                )
-                TextField("Title", text: titleBinding)
-                    .font(.title2.bold())
-                    .textFieldStyle(.plain)
-                    .focused($isTitleFocused)
-                    .onSubmit {
-                        store.viewMode = .edit
-                        isEditorFocused = true
-                    }
-                    #if !os(macOS)
-                    .textInputAutocapitalization(.sentences)
-                    #endif
-                    .padding(.horizontal, 24)
-                    .padding(.top, 4)
-                    .padding(.bottom, 6)
-
                 if store.viewMode == .edit {
+                    #if os(macOS)
+                    UnifiedNoteTextView(
+                        store: store,
+                        noteID: note.id,
+                        text: note.rawText,
+                        fontSize: store.editorFontSize,
+                        autoCapitalizeNewLines: store.autoCapitalizeNewLines,
+                        foldedBlocks: note.foldedBlocks
+                    )
+                    #else
+                    let titleBinding = Binding(
+                        get: { store.selectedNote?.derivedTitle ?? "" },
+                        set: { store.updateSelectedTitle($0) }
+                    )
+                    TextField("Title", text: titleBinding)
+                        .font(.system(size: store.editorFontSize + 7, weight: .bold))
+                        .textFieldStyle(.plain)
+                        .focused($isTitleFocused)
+                        .autocorrectionDisabled(!store.autoCapitalizeNewLines)
+                        .textInputAutocapitalization(store.autoCapitalizeNewLines ? .sentences : .never)
+                        .padding(.horizontal, 24)
+                        .padding(.top, 4)
+                        .padding(.bottom, 6)
+
                     let bodyBinding = Binding(
                         get: { store.selectedNote?.derivedBody ?? "" },
                         set: { store.updateSelectedBody($0) }
                     )
                     TextEditor(text: bodyBinding)
-                        .font(.system(.body))
+                        .font(.system(size: store.editorFontSize))
                         .lineSpacing(5)
-                        .autocorrectionDisabled(false)
+                        .autocorrectionDisabled(!store.autoCapitalizeNewLines)
+                        .textInputAutocapitalization(store.autoCapitalizeNewLines ? .sentences : .never)
                         .focused($isEditorFocused)
-                        #if !os(macOS)
-                        .textInputAutocapitalization(.sentences)
-                        #endif
                         .padding(.horizontal, 20)
                         .padding(.bottom, 8)
+                    #endif
 
                     if !store.query.isEmpty && !store.selectedSearchMatches.isEmpty {
                         searchMatchesFooter
@@ -449,6 +501,18 @@ struct AscensionNotesRootView: View {
                             .padding(.bottom, 12)
                     }
                 } else {
+                    let titleBinding = Binding(
+                        get: { store.selectedNote?.derivedTitle ?? "" },
+                        set: { store.updateSelectedTitle($0) }
+                    )
+                    TextField("Title", text: titleBinding)
+                        .font(.system(size: store.editorFontSize + 7, weight: .bold))
+                        .textFieldStyle(.plain)
+                        .focused($isTitleFocused)
+                        .padding(.horizontal, 24)
+                        .padding(.top, 4)
+                        .padding(.bottom, 6)
+
                     ScrollView {
                         VStack(alignment: .leading, spacing: 14) {
                             let cleanBodyIssues = store.spellcheckCleanView ? cleanViewSpellIssues(for: note) : []
@@ -469,6 +533,8 @@ struct AscensionNotesRootView: View {
                             if !store.query.isEmpty && !store.selectedSearchMatches.isEmpty {
                                 searchMatchesFooter
                             }
+
+                            Spacer(minLength: 280)
                         }
                         .padding(.horizontal, 24)
                         .padding(.vertical, 6)
@@ -490,7 +556,7 @@ struct AscensionNotesRootView: View {
                     Toggle(isOn: $store.autoCapitalizeNewLines) {
                         Label("Auto-Cap", systemImage: "textformat.size.larger")
                     }
-                    .help("Auto-capitalize first letter on new lines (Siri Dictation)")
+                    .help("Toggle auto-capitalization & autocorrect (keep OFF for pure lowercase/MLeet)")
 
                     Toggle(isOn: $store.spellcheckCleanView) {
                         Label("Spellcheck", systemImage: "text.badge.checkmark")
@@ -683,9 +749,8 @@ struct AscensionNotesRootView: View {
         let (bodyClean, bodyStartOffset) = cleanViewBodySlice(for: note)
 
         var attributed = AttributedString(bodyClean)
-        attributed.font = .body
+        attributed.font = .system(size: store.editorFontSize)
 
-        // Underline misspelled words in Clean View with red dotted squiggle
         for issue in spellIssues {
             guard issue.charOffset >= 0,
                   issue.charEnd <= bodyClean.count,
@@ -697,7 +762,6 @@ struct AscensionNotesRootView: View {
             }
         }
 
-        // Highlight active search hits within the body slice
         for hit in store.searchMatches(for: note) {
             let relStart = hit.normalizedOffset - bodyStartOffset
             let relEnd = hit.normalizedEnd - bodyStartOffset
@@ -817,6 +881,13 @@ struct AscensionNotesRootView: View {
                             .buttonStyle(.bordered)
                         }
                     }
+                }
+
+                Section("Local Storage & Backup") {
+                    Text(store.storageFolderPath)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
                 }
             }
         }
