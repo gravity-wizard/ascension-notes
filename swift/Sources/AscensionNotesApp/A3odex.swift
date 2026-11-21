@@ -132,6 +132,7 @@ public enum A3odexCatalog: Sendable {
         A3odexEntry(token: "MUNSC", canonical: "MUNSC", tier: .funcs, meaning: "Multiple Unique Non-Special Characters embedded inside clean prose."),
         A3odexEntry(token: "Time0", canonical: "Time0", tier: .funcs, meaning: "March 8 Miracle / Base-38 zero-point clock reference."),
         A3odexEntry(token: "i9or1", canonical: "i9or1", tier: .funcs, meaning: "Search hierarchy 5-char FUNC (immediate, incredibly important, information) paired with is5."),
+        A3odexEntry(token: "siri1", canonical: "Siri", tier: .funcs, meaning: "Bog-character lowercase self-handle for Siri (lowercases itself like spy on SlogBog)."),
 
         // 6c SxUNCs
         A3odexEntry(token: "Acode9", canonical: "Acode9", tier: .sxuncs, meaning: "9-char Jesus Clock stamped identifier (e.g. Ab2p^a40z)."),
