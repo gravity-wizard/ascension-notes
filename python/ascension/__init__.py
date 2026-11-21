@@ -52,7 +52,13 @@ from .base38 import (
     safe_jesus_clock,
     to_url_safe_base38,
 )
-from .notes_engine import AscensionNote, AscensionNotesStore, SearchMatch
+from .notes_engine import (
+    AscensionNote,
+    AscensionNotesStore,
+    SearchMatch,
+    load_custom_rules,
+    save_custom_rules,
+)
 
 __all__ = [
     "ALL_MODES",
@@ -97,9 +103,11 @@ __all__ = [
     "jesus_clock",
     "jesus_clock_to_datetime",
     "lead_letter_for_clock_char",
+    "load_custom_rules",
     "normalize_munsc_token",
     "parse_acode9",
     "safe_jesus_clock",
+    "save_custom_rules",
     "to_caret",
     "to_dash",
     "to_url_safe_base38",

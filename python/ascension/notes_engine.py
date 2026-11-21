@@ -8,8 +8,10 @@ layer via the `AXIF` span index.
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 import json
+from pathlib import Path
 import re
 from typing import Any, Iterable, Sequence
 
@@ -350,6 +352,28 @@ class AscensionNote:
     def to_json(self, *, indent: int | None = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent, ensure_ascii=False)
 
+    def export_clean_with_axif_footer(self, *, use_base64: bool = True) -> str:
+        compact_json = self.axif.to_json(indent=None)
+        if use_base64:
+            payload = base64.b64encode(compact_json.encode("utf-8")).decode("ascii")
+        else:
+            payload = compact_json
+        return f"{self.normalized_text}\n\n[AXIF: {self.owner_acode9} | {payload}]"
+
+    def export_slogbog_bbcode(self) -> str:
+        axif_json = self.axif.to_json(indent=2)
+        return (
+            f'[quote="Acode9: {self.owner_acode9} | Clock: {self.axif.jesus_clock}"]\n'
+            f"{self.normalized_text}\n"
+            "[/quote]\n"
+            f"[b]Acode9:[/b] [code]{self.owner_acode9}[/code] | "
+            f"[b]Jesus Clock:[/b] [code]{self.axif.jesus_clock}[/code] | "
+            f"[b]MUNSCs:[/b] {self.axif.munsc_count}\n"
+            "[spoiler=AXIF][code]\n"
+            f"{axif_json}\n"
+            "[/code][/spoiler]"
+        )
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AscensionNote:
         axif_data = data["axif"]
@@ -365,11 +389,56 @@ class AscensionNote:
         )
 
 
+def _resolve_rules_path(folder_or_file: str | Path) -> Path:
+    path = Path(folder_or_file)
+    if path.suffix.lower() == ".json":
+        return path
+    return path / "munsc_rules.json"
+
+
+def load_custom_rules(folder_or_file: str | Path) -> list[MUNSCRule]:
+    """Load user-defined MUNSC rules from `munsc_rules.json` in a folder (or explicit file)."""
+    target = _resolve_rules_path(folder_or_file)
+    if not target.exists():
+        return []
+    raw_data = json.loads(target.read_text(encoding="utf-8"))
+    if isinstance(raw_data, dict):
+        raw_items = raw_data.get("rules", [])
+    elif isinstance(raw_data, list):
+        raw_items = raw_data
+    else:
+        raise ValueError(f"Invalid munsc_rules.json payload in {target}")
+    return [MUNSCRule.from_dict(item) for item in raw_items]
+
+
+def save_custom_rules(
+    rules: Sequence[MUNSCRule], folder_or_file: str | Path
+) -> Path:
+    """Persist user-defined MUNSC rules to `munsc_rules.json` inside a sync/storage folder."""
+    target = _resolve_rules_path(folder_or_file)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = [rule.to_dict() for rule in rules]
+    target.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return target
+
+
 class AscensionNotesStore:
     """In-memory collection of AscensionNotes indexed by owner Acode9."""
 
-    def __init__(self, notes: Iterable[AscensionNote] = ()) -> None:
+    def __init__(
+        self,
+        notes: Iterable[AscensionNote] = (),
+        custom_rules: Sequence[MUNSCRule] = (),
+        sync_folder: str | Path | None = None,
+    ) -> None:
         self._notes: dict[str, AscensionNote] = {}
+        self.custom_rules: list[MUNSCRule] = list(custom_rules)
+        self.sync_folder: Path | None = Path(sync_folder) if sync_folder is not None else None
+        if self.sync_folder is not None and not self.custom_rules:
+            self.custom_rules = load_custom_rules(self.sync_folder)
         for note in notes:
             self.add_note(note)
 
@@ -381,6 +450,76 @@ class AscensionNotesStore:
 
     def list_notes(self) -> list[AscensionNote]:
         return list(self._notes.values())
+
+    def add_custom_rule(
+        self,
+        token: str,
+        normalized: str,
+        *,
+        description: str = "",
+        is_regex: bool = False,
+    ) -> MUNSCRule:
+        clean_token = token.strip()
+        clean_norm = normalized.strip()
+        if not clean_token or not clean_norm or clean_token == clean_norm:
+            raise ValueError("Custom MUNSC rule requires non-empty distinct token and normalized form.")
+
+        for idx, existing in enumerate(self.custom_rules):
+            if existing.pattern == clean_token and existing.is_regex == is_regex:
+                updated = MUNSCRule(
+                    name=existing.name,
+                    pattern=clean_token,
+                    replacement=clean_norm,
+                    is_regex=is_regex,
+                    description=description.strip()
+                    or f"Custom MUNSC '{clean_token}' -> '{clean_norm}'",
+                )
+                self.custom_rules[idx] = updated
+                if self.sync_folder is not None:
+                    self.save_custom_rules(self.sync_folder)
+                return updated
+
+        slug = "".join(ch if ch.isalnum() else "_" for ch in clean_token)
+        candidate = f"custom_{slug}"
+        existing_names = {r.name for r in self.custom_rules}
+        suffix = 2
+        while candidate in existing_names:
+            candidate = f"custom_{slug}_{suffix}"
+            suffix += 1
+
+        rule = MUNSCRule(
+            name=candidate,
+            pattern=clean_token,
+            replacement=clean_norm,
+            is_regex=is_regex,
+            description=description.strip()
+            or f"Custom MUNSC '{clean_token}' -> '{clean_norm}'",
+        )
+        self.custom_rules.append(rule)
+        if self.sync_folder is not None:
+            self.save_custom_rules(self.sync_folder)
+        return rule
+
+    def delete_custom_rule(self, name: str) -> bool:
+        before = len(self.custom_rules)
+        self.custom_rules = [r for r in self.custom_rules if r.name != name]
+        removed = len(self.custom_rules) < before
+        if removed and self.sync_folder is not None:
+            self.save_custom_rules(self.sync_folder)
+        return removed
+
+    def save_custom_rules(self, folder_or_file: str | Path | None = None) -> Path:
+        target = folder_or_file if folder_or_file is not None else self.sync_folder
+        if target is None:
+            raise ValueError("No sync_folder or target path provided for saving custom rules.")
+        return save_custom_rules(self.custom_rules, target)
+
+    def load_custom_rules(self, folder_or_file: str | Path | None = None) -> list[MUNSCRule]:
+        target = folder_or_file if folder_or_file is not None else self.sync_folder
+        if target is None:
+            raise ValueError("No sync_folder or target path provided for loading custom rules.")
+        self.custom_rules = load_custom_rules(target)
+        return list(self.custom_rules)
 
     def search_all(
         self,
@@ -406,7 +545,10 @@ class AscensionNotesStore:
 
     def export_bundle(self, *, indent: int | None = 2) -> str:
         return json.dumps(
-            {"notes": [n.to_dict() for n in self._notes.values()]},
+            {
+                "notes": [n.to_dict() for n in self._notes.values()],
+                "custom_rules": [r.to_dict() for r in self.custom_rules],
+            },
             indent=indent,
             ensure_ascii=False,
         )
@@ -414,4 +556,8 @@ class AscensionNotesStore:
     @classmethod
     def import_bundle(cls, payload: str) -> AscensionNotesStore:
         data = json.loads(payload)
-        return cls(AscensionNote.from_dict(item) for item in data.get("notes", []))
+        rules = [MUNSCRule.from_dict(r) for r in data.get("custom_rules", [])]
+        return cls(
+            (AscensionNote.from_dict(item) for item in data.get("notes", [])),
+            custom_rules=rules,
+        )

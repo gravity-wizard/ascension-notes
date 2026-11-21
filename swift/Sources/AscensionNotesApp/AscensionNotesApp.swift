@@ -4,6 +4,9 @@ import Foundation
 #if canImport(SwiftUI)
 import Combine
 import SwiftUI
+#if canImport(UniformTypeIdentifiers)
+import UniformTypeIdentifiers
+#endif
 #if os(macOS)
 import AppKit
 #elseif canImport(UIKit)
@@ -138,8 +141,13 @@ struct AscensionNotesApp: App {
 struct AscensionNotesRootView: View {
     @Bindable var store: NotesStore
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
-    @State private var showCopiedToast: Bool = false
+    @State private var copiedFeedbackLabel: String?
     @State private var copiedClockToast: Bool = false
+    @State private var newRuleToken: String = ""
+    @State private var newRuleNormalized: String = ""
+    @State private var newRuleDescription: String = ""
+    @State private var showSyncFolderImporter: Bool = false
+    @State private var syncFolderError: String?
     @FocusState private var isFindFieldFocused: Bool
     @FocusState private var isInlineFindFocused: Bool
     @FocusState private var isTitleFocused: Bool
@@ -161,7 +169,7 @@ struct AscensionNotesRootView: View {
         .tint(notesGold)
         .inspector(isPresented: $store.showInspector) {
             axifInspectorDrawer
-                .inspectorColumnWidth(min: 280, ideal: 320, max: 390)
+                .inspectorColumnWidth(min: 300, ideal: 340, max: 420)
         }
         .sheet(isPresented: $store.showHelp) {
             NavigationStack {
@@ -173,11 +181,31 @@ struct AscensionNotesRootView: View {
                     }
             }
         }
+        .sheet(isPresented: $store.showA3odex) {
+            A3odexSheetView(store: store)
+        }
+        .sheet(isPresented: $store.showImportAXIF) {
+            ImportAXIFSheetView(store: store)
+        }
+        #if canImport(UniformTypeIdentifiers)
+        .fileImporter(
+            isPresented: $showSyncFolderImporter,
+            allowedContentTypes: [.folder]
+        ) { result in
+            switch result {
+            case .success(let url):
+                syncFolderError = nil
+                store.setSyncFolder(url)
+            case .failure(let error):
+                syncFolderError = error.localizedDescription
+            }
+        }
+        #endif
         .onReceive(clockTimer) { _ in
             store.refreshClock()
         }
         .onChange(of: store.selectedNoteID) { _, _ in
-            showCopiedToast = false
+            copiedFeedbackLabel = nil
         }
     }
 
@@ -234,6 +262,19 @@ struct AscensionNotesRootView: View {
                 Menu {
                     Toggle("Auto-Cap / Autocorrect", isOn: $store.autoCapitalizeNewLines)
                     Toggle("URL-Safe (- and _)", isOn: $store.urlSafeDash)
+                    Divider()
+                    Button("Run \"Where's Norma?\" Aa Demo") {
+                        store.runWheresNormaDemo()
+                    }
+                    Button("Codex / A3odex (4-Tier)...") {
+                        store.showA3odex = true
+                    }
+                    Button("Import Shared AXIF...") {
+                        store.showImportAXIF = true
+                    }
+                    Button("Sync Now / Reload") {
+                        store.reloadFromSyncFolder()
+                    }
                     Divider()
                     Button("Ascension Notes Help") {
                         #if os(macOS)
@@ -441,7 +482,7 @@ struct AscensionNotesRootView: View {
                 Text(note.updatedAt, style: .time)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text(note.previewBody(normalized: true))
+                Text(note.previewBody(normalized: true, rules: store.customRules))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -451,7 +492,7 @@ struct AscensionNotesRootView: View {
                 Text(note.ownerAcode9)
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
-                if let doc = note.compiledDocument(), doc.axif.munscCount > 0 {
+                if let doc = note.compiledDocument(rules: store.customRules), doc.axif.munscCount > 0 {
                     Text("• \(doc.axif.munscCount) AXIF")
                         .font(.caption2)
                         .foregroundStyle(notesGold)
@@ -583,7 +624,7 @@ struct AscensionNotesRootView: View {
                         .font(.caption.monospaced().weight(.semibold))
                         .foregroundStyle(notesGold)
                         .textSelection(.enabled)
-                    if let doc = note.compiledDocument(urlSafeDash: store.urlSafeDash) {
+                    if let doc = note.compiledDocument(urlSafeDash: store.urlSafeDash, rules: store.customRules) {
                         Text("• \(doc.axif.munscCount) AXIF token(s)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -662,6 +703,14 @@ struct AscensionNotesRootView: View {
                     }
                     .keyboardShortcut("f", modifiers: .command)
                     .help("Find in Note (Cmd+F)")
+
+                    Button {
+                        store.showA3odex = true
+                    } label: {
+                        Label("A3odex", systemImage: "books.vertical")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .help("Open 4-Tier A3odex Codex & \"Where's Norma?\" Aa Demo")
 
                     Button {
                         store.showInspector.toggle()
@@ -753,7 +802,7 @@ struct AscensionNotesRootView: View {
     }
 
     private func cleanViewBodySlice(for note: StoredNote) -> (bodyClean: String, bodyStartOffset: Int) {
-        guard let doc = note.compiledDocument(urlSafeDash: store.urlSafeDash) else {
+        guard let doc = note.compiledDocument(urlSafeDash: store.urlSafeDash, rules: store.customRules) else {
             return (note.derivedBody, note.derivedTitle.count + 1)
         }
         let fullClean = doc.render(normalized: true)
@@ -898,7 +947,7 @@ struct AscensionNotesRootView: View {
                 }
 
                 if let doc = store.selectedDocument {
-                    Section("AXIF Metadata Layer") {
+                    Section("AXIF Metadata & Share") {
                         LabeledContent("Version", value: doc.axif.version)
                         HStack {
                             Text("Jesus Clock")
@@ -910,15 +959,42 @@ struct AscensionNotesRootView: View {
                         LabeledContent("Hidden MUNSCs", value: "\(doc.axif.munscCount)")
 
                         Button {
-                            if let json = try? doc.axif.toJSON(prettyPrinted: true) {
-                                copyToClipboard(json)
-                                showCopiedToast = true
+                            if let footerText = store.exportCleanWithAXIFFooter(for: note) {
+                                copyToClipboard(footerText)
+                                copiedFeedbackLabel = "Copied Clean + AXIF Footer!"
                             }
                         } label: {
-                            Label(
-                                showCopiedToast ? "Copied AXIF JSON!" : "Copy Shareable AXIF JSON",
-                                systemImage: showCopiedToast ? "checkmark" : "doc.on.doc"
-                            )
+                            Label("Copy Clean + AXIF Footer", systemImage: "doc.text.fill")
+                        }
+
+                        Button {
+                            if let bbcode = store.exportSlogBogBBCode(for: note) {
+                                copyToClipboard(bbcode)
+                                copiedFeedbackLabel = "Copied SlogBog phpBBog Post!"
+                            }
+                        } label: {
+                            Label("Copy SlogBog phpBBog Post", systemImage: "quote.bubble")
+                        }
+
+                        Button {
+                            if let json = try? doc.axif.toJSON(prettyPrinted: true) {
+                                copyToClipboard(json)
+                                copiedFeedbackLabel = "Copied Shareable AXIF JSON!"
+                            }
+                        } label: {
+                            Label("Copy Shareable AXIF JSON", systemImage: "doc.on.doc")
+                        }
+
+                        Button {
+                            store.showImportAXIF = true
+                        } label: {
+                            Label("Import Shared AXIF Bundle...", systemImage: "square.and.arrow.down")
+                        }
+
+                        if let feedback = copiedFeedbackLabel {
+                            Label(feedback, systemImage: "checkmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.green)
                         }
                     }
 
@@ -949,37 +1025,204 @@ struct AscensionNotesRootView: View {
                         }
                     }
                 }
+            }
 
-                Section("Stored Unused Acodes Vault (\(store.unusedAcodeVault.count))") {
-                    HStack {
-                        Button("Harvest +12") {
-                            store.harvestUnusedAcodes(count: 12)
-                        }
-                        Spacer()
-                        Button("Claim & Assign") {
-                            let code = store.claimUnusedAcode()
-                            store.updateSelectedOwnerAcode9(code)
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                    ForEach(store.unusedAcodeVault.prefix(6)) { entry in
-                        HStack {
-                            Text(entry.acode9)
-                                .font(.caption.monospaced())
-                                .textSelection(.enabled)
+            Section("Custom MUNSC Rules (\(store.customRules.count))") {
+                if store.customRules.isEmpty {
+                    Text("No custom MUNSC rules yet. Built-ins handle NormA, Norm4, Norma4, and leet patterns.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(store.customRules) { rule in
+                        HStack(alignment: .top, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 4) {
+                                    Text(rule.pattern)
+                                        .font(.system(.caption, design: .monospaced).bold())
+                                    Text("→")
+                                        .foregroundStyle(.secondary)
+                                    Text(rule.replacement)
+                                        .font(.caption.weight(.semibold))
+                                }
+                                if !rule.description.isEmpty {
+                                    Text(rule.description)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
                             Spacer()
-                            Text(entry.jesusClock)
-                                .font(.caption2.monospaced())
-                                .foregroundStyle(.secondary)
+                            Button(role: .destructive) {
+                                store.deleteCustomRule(name: rule.name)
+                            } label: {
+                                Image(systemName: "trash")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Delete custom rule \(rule.pattern)")
                         }
                     }
                 }
 
-                Section("Local Storage & Backup") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Add Custom Rule")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        TextField("Raw Token (e.g. NormA)", text: $newRuleToken)
+                            .font(.system(.caption, design: .monospaced))
+                            .textFieldStyle(.roundedBorder)
+                        Text("→")
+                            .foregroundStyle(.secondary)
+                        TextField("Clean Word (e.g. Norma)", text: $newRuleNormalized)
+                            .font(.caption)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    TextField("Description (optional)", text: $newRuleDescription)
+                        .font(.caption)
+                        .textFieldStyle(.roundedBorder)
+                    Button {
+                        if store.addCustomRule(
+                            token: newRuleToken,
+                            normalized: newRuleNormalized,
+                            description: newRuleDescription
+                        ) {
+                            newRuleToken = ""
+                            newRuleNormalized = ""
+                            newRuleDescription = ""
+                        }
+                    } label: {
+                        Label("+ Add MUNSC Rule", systemImage: "plus.circle.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(
+                        newRuleToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || newRuleNormalized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || newRuleToken.trimmingCharacters(in: .whitespacesAndNewlines)
+                                == newRuleNormalized.trimmingCharacters(in: .whitespacesAndNewlines)
+                    )
+                }
+                .padding(.vertical, 4)
+            }
+
+            Section("Codex / A3odex & Demo") {
+                Button {
+                    store.runWheresNormaDemo()
+                } label: {
+                    Label("Run \"Where's Norma?\" Aa Demo", systemImage: "play.fill")
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button {
+                    store.showA3odex = true
+                } label: {
+                    Label("Browse A3odex (4-Tier)", systemImage: "books.vertical")
+                }
+
+                if store.selectedNote == nil {
+                    Button {
+                        store.showImportAXIF = true
+                    } label: {
+                        Label("Import Shared AXIF Bundle...", systemImage: "square.and.arrow.down")
+                    }
+                }
+            }
+
+            Section("Stored Unused Acodes Vault (\(store.unusedAcodeVault.count))") {
+                HStack {
+                    Button("Harvest +12") {
+                        store.harvestUnusedAcodes(count: 12)
+                    }
+                    Spacer()
+                    Button("Claim & Assign") {
+                        let code = store.claimUnusedAcode()
+                        store.updateSelectedOwnerAcode9(code)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.selectedNote == nil)
+                }
+                ForEach(store.unusedAcodeVault.prefix(6)) { entry in
+                    HStack {
+                        Text(entry.acode9)
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                        Spacer()
+                        Text(entry.jesusClock)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Section("Cloud Sync & Local Storage") {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(store.storageFolderPath)
                         .font(.caption2.monospaced())
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
+                    Text(store.lastSyncStatus)
+                        .font(.caption2)
+                        .foregroundStyle(notesGold)
+                }
+
+                ForEach(NotesStore.detectSyncFolderCandidates()) { candidate in
+                    let isCurrent = candidate.url.standardizedFileURL == store.activeSyncFolderURL.standardizedFileURL
+                    Button {
+                        store.setSyncFolder(candidate.url)
+                    } label: {
+                        HStack {
+                            Label(candidate.name, systemImage: candidate.systemImage)
+                            Spacer()
+                            if isCurrent {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                            } else if candidate.existsAlready {
+                                Text("Has Notes")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+
+                #if canImport(UniformTypeIdentifiers)
+                Button {
+                    showSyncFolderImporter = true
+                } label: {
+                    Label("Choose Sync Folder...", systemImage: "folder.badge.plus")
+                }
+                #endif
+
+                HStack {
+                    Button {
+                        store.reloadFromSyncFolder()
+                    } label: {
+                        Label("Sync Now / Reload", systemImage: "arrow.clockwise")
+                    }
+
+                    Spacer()
+
+                    if store.activeSyncFolderURL.standardizedFileURL != NotesStore.defaultStorageFolderURL.standardizedFileURL {
+                        Button("Default") {
+                            store.resetToDefaultSyncFolder()
+                        }
+                        .font(.caption)
+                    }
+                }
+
+                #if os(macOS)
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([store.activeSyncFolderURL])
+                } label: {
+                    Label("Reveal Sync Folder in Finder", systemImage: "finder")
+                }
+                #endif
+
+                if let syncFolderError {
+                    Text(syncFolderError)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
                 }
             }
         }

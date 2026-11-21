@@ -119,4 +119,48 @@ final class AscensionCoreTests: XCTestCase {
         )
         XCTAssertEqual(hitInsensitive.count, 3)
     }
+
+    func testShareableAXIFFooterSlogBogAndRoundtripImport() throws {
+        let customRule = MUNSCRule(
+            name: "custom_z1on",
+            pattern: "Z1on",
+            replacement: "Zion",
+            description: "Custom Zion MUNSC"
+        )
+        let raw = "Heading toward Z1on with NormA and Norm4."
+        let ts = try Base38Clock.decodeJesusClock("2p15ek")
+        let doc = try AXIFDocument(
+            title: "Route",
+            rawText: raw,
+            ownerAcode9: "Ab2p^a40z",
+            rules: [customRule],
+            timestampUnix: ts
+        )
+        XCTAssertEqual(doc.normalizedText, "Heading toward Zion with Norma and Norma.")
+
+        // 1. Clean + AXIF Footer roundtrip
+        let footer = try doc.exportCleanWithAXIFFooter()
+        let decodedFooter = try AXIFDocument.parseSharedBundle(footer)
+        XCTAssertEqual(decodedFooter.metadata.acode9, "Ab2p^a40z")
+        XCTAssertEqual(decodedFooter.reconstructedRawText, raw)
+        XCTAssertEqual(decodedFooter.rawSHA256Matches, true)
+        XCTAssertEqual(decodedFooter.normalizedSHA256Matches, true)
+        XCTAssertEqual(decodedFooter.metadata.rules.first?.pattern, "Z1on")
+
+        // 2. SlogBog phpBBog roundtrip
+        let bbcode = try doc.exportSlogBogBBCode()
+        XCTAssertTrue(bbcode.contains("[quote="))
+        XCTAssertTrue(bbcode.contains("[spoiler=AXIF]"))
+        let decodedBB = try AXIFDocument.parseSharedBundle(bbcode)
+        XCTAssertEqual(decodedBB.reconstructedRawText, raw)
+        XCTAssertEqual(decodedBB.rawSHA256Matches, true)
+        XCTAssertEqual(decodedBB.normalizedSHA256Matches, true)
+
+        // 3. Python-style snake_case MUNSCRule JSON compatibility
+        let snakeRuleJSON = #"{"name":"py_rule","pattern":"C4stle","replacement":"Castle","is_regex":false,"description":"py"}"#
+        let decodedRule = try JSONDecoder().decode(MUNSCRule.self, from: Data(snakeRuleJSON.utf8))
+        XCTAssertEqual(decodedRule.pattern, "C4stle")
+        XCTAssertEqual(decodedRule.replacement, "Castle")
+        XCTAssertFalse(decodedRule.isRegex)
+    }
 }

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 import random
 import sys
+import tempfile
 import unittest
 
 # Ensure `python/` is on sys.path regardless of invocation CWD
@@ -33,8 +35,10 @@ from ascension import (
     jesus_clock,
     jesus_clock_to_datetime,
     lead_letter_for_clock_char,
+    load_custom_rules,
     parse_acode9,
     safe_jesus_clock,
+    save_custom_rules,
     to_caret,
     to_dash,
     to_url_safe_base38,
@@ -278,6 +282,65 @@ class AXIFAndDualLayerSearchTests(unittest.TestCase):
         self.assertIsNotNone(restored_note)
         self.assertEqual(restored_note.render("normalized"), "Heading toward Zion with Norma.")
         self.assertEqual(len(restored.search_all("Z1on", case_sensitive=True)), 1)
+
+    def test_custom_rules_persistence_and_exports(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sync_dir = Path(tmpdir) / "AscensionNotes"
+            self.assertEqual(load_custom_rules(sync_dir), [])
+
+            store = AscensionNotesStore(sync_folder=sync_dir)
+            added = store.add_custom_rule(
+                "N0rma",
+                "Norma",
+                description="Custom N0rma variant",
+            )
+            self.assertEqual(added.pattern, "N0rma")
+            self.assertEqual(added.replacement, "Norma")
+            rules_file = sync_dir / "munsc_rules.json"
+            self.assertTrue(rules_file.exists())
+
+            reloaded = AscensionNotesStore(sync_folder=sync_dir)
+            self.assertEqual(len(reloaded.custom_rules), 1)
+            self.assertEqual(reloaded.custom_rules[0].pattern, "N0rma")
+
+            # Verify Swift-style camelCase munsc_rules.json loads cleanly
+            swift_payload = [
+                {
+                    "name": "custom_7Aunts",
+                    "pattern": "7Aunts",
+                    "replacement": "Seven Aunts",
+                    "isRegex": False,
+                    "description": "From Swift UI",
+                }
+            ]
+            (sync_dir / "munsc_rules.json").write_text(
+                json.dumps(swift_payload), encoding="utf-8"
+            )
+            loaded_swift = load_custom_rules(sync_dir)
+            self.assertEqual(len(loaded_swift), 1)
+            self.assertEqual(loaded_swift[0].replacement, "Seven Aunts")
+            self.assertFalse(loaded_swift[0].is_regex)
+
+            # Save + delete roundtrip
+            saved_path = save_custom_rules(loaded_swift, sync_dir)
+            self.assertEqual(saved_path, rules_file)
+            reloaded.load_custom_rules(sync_dir)
+            self.assertTrue(reloaded.delete_custom_rule("custom_7Aunts"))
+            self.assertEqual(load_custom_rules(sync_dir), [])
+
+            # Shareable AXIF footer & SlogBog phpBBog exports
+            note = AscensionNote.create(
+                "Met NormA at 7Aunts.",
+                owner_acode9="Ab2p^a40z",
+                rules=loaded_swift,
+                timestamp=decode_jesus_clock("2p15ek"),
+            )
+            footer = note.export_clean_with_axif_footer()
+            self.assertIn("Met Norma at Seven Aunts.", footer)
+            self.assertIn("[AXIF: Ab2p^a40z | ", footer)
+            bbcode = note.export_slogbog_bbcode()
+            self.assertIn('[quote="Acode9: Ab2p^a40z | Clock: 2p15ek"]', bbcode)
+            self.assertIn("[spoiler=AXIF][code]", bbcode)
 
 
 if __name__ == "__main__":

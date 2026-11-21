@@ -99,7 +99,7 @@ class MUNSCRule:
             name=str(data["name"]),
             pattern=str(data["pattern"]),
             replacement=str(data["replacement"]),
-            is_regex=bool(data.get("is_regex", False)),
+            is_regex=bool(data.get("is_regex", data.get("isRegex", False))),
             description=str(data.get("description", "")),
         )
 
@@ -177,16 +177,23 @@ class AXIFEntry:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AXIFEntry:
+        norm_form = str(data.get("normalized_form", data.get("normalizedForm", "")))
+        munsc_rule = str(data.get("munsc_rule", data.get("munscRule", "")))
         return cls(
             token=str(data["token"]),
-            normalized_form=str(data["normalized_form"]),
+            normalized_form=norm_form,
             offset=int(data["offset"]),
             acode9=str(data["acode9"]),
-            munsc_rule=str(data["munsc_rule"]),
+            munsc_rule=munsc_rule,
             length=int(data.get("length", len(str(data["token"])))),
-            normalized_offset=int(data.get("normalized_offset", data["offset"])),
+            normalized_offset=int(
+                data.get("normalized_offset", data.get("normalizedOffset", data["offset"]))
+            ),
             normalized_length=int(
-                data.get("normalized_length", len(str(data["normalized_form"])))
+                data.get(
+                    "normalized_length",
+                    data.get("normalizedLength", len(norm_form)),
+                )
             ),
         )
 
@@ -254,9 +261,11 @@ class AXIFMetadata:
         return cls(
             version=str(data.get("version", AXIF_VERSION)),
             acode9=str(data["acode9"]),
-            jesus_clock=str(data["jesus_clock"]),
-            raw_sha256=str(data["raw_sha256"]),
-            normalized_sha256=str(data["normalized_sha256"]),
+            jesus_clock=str(data.get("jesus_clock", data.get("jesusClock", ""))),
+            raw_sha256=str(data.get("raw_sha256", data.get("rawSHA256", ""))),
+            normalized_sha256=str(
+                data.get("normalized_sha256", data.get("normalizedSHA256", ""))
+            ),
             entries=[AXIFEntry.from_dict(e) for e in data.get("entries", [])],
             rules=[MUNSCRule.from_dict(r) for r in data.get("rules", [])],
         )

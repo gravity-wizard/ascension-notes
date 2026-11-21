@@ -140,7 +140,7 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
         return out
     }
 
-    public func compiledDocument(urlSafeDash: Bool = false) -> AXIFDocument? {
+    public func compiledDocument(urlSafeDash: Bool = false, rules: [MUNSCRule] = []) -> AXIFDocument? {
         let normalizedCode: String
         if urlSafeDash {
             normalizedCode = (try? Acode9.toDash(ownerAcode9)) ?? ownerAcode9
@@ -151,18 +151,34 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
             title: displayTitle,
             rawText: expandedRawText,
             ownerAcode9: normalizedCode,
+            rules: rules,
             timestampUnix: Int64(updatedAt.timeIntervalSince1970)
         )
     }
 
-    public func previewBody(normalized: Bool = true) -> String {
-        let text = compiledDocument()?.render(normalized: normalized) ?? expandedRawText
+    public func previewBody(normalized: Bool = true, rules: [MUNSCRule] = []) -> String {
+        let text = compiledDocument(rules: rules)?.render(normalized: normalized) ?? expandedRawText
         let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
         if lines.count <= 1 {
             return "No additional text"
         }
         return lines.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
     }
+}
+
+public struct SyncFolderCandidate: Identifiable, Hashable, Sendable {
+    public var id: String { url.path }
+    public let name: String
+    public let subtitle: String
+    public let url: URL
+    public let systemImage: String
+    public let existsAlready: Bool
+}
+
+public struct AXIFImportResult: Sendable {
+    public let note: StoredNote
+    public let bundle: AXIFDecodedBundle
+    public let importedRulesCount: Int
 }
 
 @MainActor
@@ -174,7 +190,12 @@ final class NotesStore {
         var id: String { rawValue }
     }
 
+    static let syncFolderDefaultsKey = "ascensionNotesSyncFolderPath"
+    static let syncFolderBookmarkKey = "ascensionNotesSyncFolderBookmark"
+
     var notes: [StoredNote] = []
+    var customRules: [MUNSCRule] = []
+    var a3odexEntries: [A3odexEntry] = A3odexCatalog.starterEntries
     var activeSidebarFilter: SidebarFilter = .all
     var selectedNoteID: UUID?
 
@@ -182,6 +203,8 @@ final class NotesStore {
     var showFindBar: Bool = false
     var showInspector: Bool = false
     var showHelp: Bool = false
+    var showA3odex: Bool = false
+    var showImportAXIF: Bool = false
     var autoCapitalizeNewLines: Bool = false
     var spellcheckCleanView: Bool = true
     var spellcheckRevision: Int = 0
@@ -200,23 +223,245 @@ final class NotesStore {
     var rawClockText: String = Base38Clock.jesusClock(minWidth: 2)
     var clockIsPaused: Bool = false
 
-    private let storageURL: URL
-    private let backupURL: URL
-    private let vaultURL: URL
+    var activeSyncFolderURL: URL
+    var lastSyncStatus: String = "Ready"
+    var lastSyncDate: Date?
+
+    private var storageURL: URL { activeSyncFolderURL.appendingPathComponent("notes.json") }
+    private var backupURL: URL { activeSyncFolderURL.appendingPathComponent("notes.backup.json") }
+    private var vaultURL: URL { activeSyncFolderURL.appendingPathComponent("acode_vault.json") }
+    private var munscRulesURL: URL { activeSyncFolderURL.appendingPathComponent("munsc_rules.json") }
+    private var a3odexURL: URL { activeSyncFolderURL.appendingPathComponent("a3odex.json") }
 
     init() {
-        let appSupport = URL.applicationSupportDirectory.appendingPathComponent("AscensionNotes", isDirectory: true)
-        self.storageURL = appSupport.appendingPathComponent("notes.json")
-        self.backupURL = appSupport.appendingPathComponent("notes.backup.json")
-        self.vaultURL = appSupport.appendingPathComponent("acode_vault.json")
+        self.activeSyncFolderURL = Self.resolveInitialSyncFolder()
+        loadCustomRules()
         loadOrSeed()
         loadVault()
+        loadA3odex()
         refreshClock()
         generateNextPool()
     }
 
     var storageFolderPath: String {
-        storageURL.deletingLastPathComponent().path
+        activeSyncFolderURL.path
+    }
+
+    static var defaultStorageFolderURL: URL {
+        URL.applicationSupportDirectory.appendingPathComponent("AscensionNotes", isDirectory: true)
+    }
+
+    static func resolveInitialSyncFolder() -> URL {
+        if let bookmarkData = UserDefaults.standard.data(forKey: syncFolderBookmarkKey) {
+            var isStale = false
+            #if os(macOS)
+            if let resolved = try? URL(
+                resolvingBookmarkData: bookmarkData,
+                options: .withSecurityScope,
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            ) {
+                return resolved
+            }
+            #else
+            if let resolved = try? URL(
+                resolvingBookmarkData: bookmarkData,
+                options: [],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            ) {
+                return resolved
+            }
+            #endif
+        }
+
+        if let savedPath = UserDefaults.standard.string(forKey: syncFolderDefaultsKey),
+           !savedPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return URL(fileURLWithPath: savedPath, isDirectory: true)
+        }
+
+        return defaultStorageFolderURL
+    }
+
+    static func detectSyncFolderCandidates() -> [SyncFolderCandidate] {
+        var candidates: [SyncFolderCandidate] = []
+        let fm = FileManager.default
+
+        let defaultURL = defaultStorageFolderURL
+        candidates.append(
+            SyncFolderCandidate(
+                name: "Default Local Storage",
+                subtitle: defaultURL.path,
+                url: defaultURL,
+                systemImage: "internaldrive",
+                existsAlready: fm.fileExists(atPath: defaultURL.appendingPathComponent("notes.json").path)
+            )
+        )
+
+        let home = fm.homeDirectoryForCurrentUser
+        let iCloudDocs = home.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
+        let iCloudTarget = iCloudDocs.appendingPathComponent("AscensionNotes", isDirectory: true)
+        if fm.fileExists(atPath: iCloudDocs.path) || fm.fileExists(atPath: iCloudTarget.path) {
+            candidates.append(
+                SyncFolderCandidate(
+                    name: "iCloud Drive",
+                    subtitle: iCloudTarget.path,
+                    url: iCloudTarget,
+                    systemImage: "icloud",
+                    existsAlready: fm.fileExists(atPath: iCloudTarget.appendingPathComponent("notes.json").path)
+                )
+            )
+        }
+
+        let cloudStorageRoot = home.appendingPathComponent("Library/CloudStorage", isDirectory: true)
+        if let items = try? fm.contentsOfDirectory(
+            at: cloudStorageRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            for item in items where item.lastPathComponent.hasPrefix("GoogleDrive-") {
+                let myDrive = item.appendingPathComponent("My Drive", isDirectory: true)
+                let gDriveTarget = myDrive.appendingPathComponent("AscensionNotes", isDirectory: true)
+                if fm.fileExists(atPath: myDrive.path) || fm.fileExists(atPath: gDriveTarget.path) {
+                    let accountLabel = item.lastPathComponent.replacingOccurrences(of: "GoogleDrive-", with: "")
+                    candidates.append(
+                        SyncFolderCandidate(
+                            name: "Google Drive (\(accountLabel))",
+                            subtitle: gDriveTarget.path,
+                            url: gDriveTarget,
+                            systemImage: "externaldrive.connected.to.line.below",
+                            existsAlready: fm.fileExists(atPath: gDriveTarget.appendingPathComponent("notes.json").path)
+                        )
+                    )
+                }
+            }
+        }
+
+        return candidates
+    }
+
+    private func withFolderAccess<T>(_ folderURL: URL, _ body: () throws -> T) rethrows -> T {
+        let accessed = folderURL.startAccessingSecurityScopedResource()
+        defer {
+            if accessed {
+                folderURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        return try body()
+    }
+
+    func setSyncFolder(_ url: URL) {
+        let targetDir = url
+        let previousDir = activeSyncFolderURL
+
+        if targetDir.standardizedFileURL == previousDir.standardizedFileURL {
+            reloadFromSyncFolder()
+            return
+        }
+
+        let fm = FileManager.default
+        let targetNotesFile = targetDir.appendingPathComponent("notes.json")
+        let targetRulesFile = targetDir.appendingPathComponent("munsc_rules.json")
+        let targetVaultFile = targetDir.appendingPathComponent("acode_vault.json")
+        let targetA3odexFile = targetDir.appendingPathComponent("a3odex.json")
+
+        let targetHasNotes = withFolderAccess(targetDir) {
+            fm.fileExists(atPath: targetNotesFile.path)
+        }
+
+        withFolderAccess(targetDir) {
+            try? fm.createDirectory(at: targetDir, withIntermediateDirectories: true)
+
+            if !targetHasNotes {
+                withFolderAccess(previousDir) {
+                    let files = ["notes.json", "notes.backup.json", "munsc_rules.json", "acode_vault.json", "a3odex.json"]
+                    for name in files {
+                        let src = previousDir.appendingPathComponent(name)
+                        let dst = targetDir.appendingPathComponent(name)
+                        if fm.fileExists(atPath: src.path), !fm.fileExists(atPath: dst.path) {
+                            try? fm.copyItem(at: src, to: dst)
+                        }
+                    }
+                }
+            }
+        }
+
+        activeSyncFolderURL = targetDir
+        UserDefaults.standard.set(targetDir.path, forKey: Self.syncFolderDefaultsKey)
+        #if os(macOS)
+        if let bookmark = try? targetDir.bookmarkData(
+            options: .withSecurityScope,
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        ) {
+            UserDefaults.standard.set(bookmark, forKey: Self.syncFolderBookmarkKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.syncFolderBookmarkKey)
+        }
+        #else
+        if let bookmark = try? targetDir.bookmarkData(
+            options: [],
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        ) {
+            UserDefaults.standard.set(bookmark, forKey: Self.syncFolderBookmarkKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.syncFolderBookmarkKey)
+        }
+        #endif
+
+        let targetExists = withFolderAccess(targetDir) {
+            (
+                rules: fm.fileExists(atPath: targetRulesFile.path),
+                vault: fm.fileExists(atPath: targetVaultFile.path),
+                a3odex: fm.fileExists(atPath: targetA3odexFile.path)
+            )
+        }
+
+        if targetHasNotes {
+            if targetExists.rules {
+                loadCustomRules()
+            } else {
+                saveCustomRules()
+            }
+            loadOrSeed()
+            if targetExists.vault {
+                loadVault()
+            } else {
+                saveVault()
+            }
+            if targetExists.a3odex {
+                loadA3odex()
+            }
+            lastSyncStatus = "Loaded existing notes from \(targetDir.lastPathComponent)"
+        } else {
+            save()
+            saveCustomRules()
+            saveVault()
+            lastSyncStatus = "Migrated notes to \(targetDir.lastPathComponent)"
+        }
+        lastSyncDate = Date()
+        spellcheckRevision += 1
+    }
+
+    func resetToDefaultSyncFolder() {
+        UserDefaults.standard.removeObject(forKey: Self.syncFolderDefaultsKey)
+        UserDefaults.standard.removeObject(forKey: Self.syncFolderBookmarkKey)
+        setSyncFolder(Self.defaultStorageFolderURL)
+    }
+
+    func reloadFromSyncFolder() {
+        let previousSelected = selectedNoteID
+        loadCustomRules()
+        loadOrSeed()
+        loadVault()
+        loadA3odex()
+        if let prev = previousSelected, notes.contains(where: { $0.id == prev }) {
+            selectedNoteID = prev
+        }
+        lastSyncDate = Date()
+        lastSyncStatus = "Synced at \(Date().formatted(date: .omitted, time: .shortened))"
+        spellcheckRevision += 1
     }
 
     func selectSidebarFilter(_ filter: SidebarFilter) {
@@ -236,7 +481,7 @@ final class NotesStore {
     }
 
     var selectedDocument: AXIFDocument? {
-        selectedNote?.compiledDocument(urlSafeDash: urlSafeDash)
+        selectedNote?.compiledDocument(urlSafeDash: urlSafeDash, rules: customRules)
     }
 
     var filteredNotes: [StoredNote] {
@@ -284,7 +529,7 @@ final class NotesStore {
 
     func searchMatches(for note: StoredNote) -> [SearchMatch] {
         let q = query
-        guard !q.isEmpty, let doc = note.compiledDocument(urlSafeDash: urlSafeDash) else {
+        guard !q.isEmpty, let doc = note.compiledDocument(urlSafeDash: urlSafeDash, rules: customRules) else {
             return []
         }
         let opts = SearchOptions(
@@ -323,6 +568,226 @@ final class NotesStore {
             return error.localizedDescription
         }
     }
+
+    // MARK: - Custom MUNSC Rules
+
+    @discardableResult
+    func addCustomRule(token: String, normalized: String, description: String = "", isRegex: Bool = false) -> Bool {
+        let cleanToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanNormalized = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanDescription = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanToken.isEmpty, !cleanNormalized.isEmpty, cleanToken != cleanNormalized else {
+            return false
+        }
+
+        if let existingIdx = customRules.firstIndex(where: { $0.pattern == cleanToken && $0.isRegex == isRegex }) {
+            let existingName = customRules[existingIdx].name
+            customRules[existingIdx] = MUNSCRule(
+                name: existingName,
+                pattern: cleanToken,
+                replacement: cleanNormalized,
+                isRegex: isRegex,
+                description: cleanDescription.isEmpty
+                    ? "Custom MUNSC '\(cleanToken)' -> '\(cleanNormalized)'"
+                    : cleanDescription
+            )
+        } else {
+            let slug = cleanToken.map { ($0.isLetter || $0.isNumber) ? String($0) : "_" }.joined()
+            var candidateName = "custom_\(slug)"
+            var suffix = 2
+            while customRules.contains(where: { $0.name == candidateName }) {
+                candidateName = "custom_\(slug)_\(suffix)"
+                suffix += 1
+            }
+            customRules.append(
+                MUNSCRule(
+                    name: candidateName,
+                    pattern: cleanToken,
+                    replacement: cleanNormalized,
+                    isRegex: isRegex,
+                    description: cleanDescription.isEmpty
+                        ? "Custom MUNSC '\(cleanToken)' -> '\(cleanNormalized)'"
+                        : cleanDescription
+                )
+            )
+        }
+        saveCustomRules()
+        spellcheckRevision += 1
+        return true
+    }
+
+    func deleteCustomRule(name: String) {
+        customRules.removeAll { $0.name == name }
+        saveCustomRules()
+        spellcheckRevision += 1
+    }
+
+    @discardableResult
+    func importCustomRules(_ incoming: [MUNSCRule]) -> Int {
+        var added = 0
+        for rule in incoming {
+            guard !rule.pattern.isEmpty, rule.pattern != rule.replacement else { continue }
+            let alreadyExists = customRules.contains {
+                $0.pattern == rule.pattern && $0.replacement == rule.replacement && $0.isRegex == rule.isRegex
+            }
+            if !alreadyExists {
+                var ruleToInsert = rule
+                if customRules.contains(where: { $0.name == rule.name }) {
+                    let uniqueName = "\(rule.name)_\(String(UUID().uuidString.prefix(4)).lowercased())"
+                    ruleToInsert = MUNSCRule(
+                        name: uniqueName,
+                        pattern: rule.pattern,
+                        replacement: rule.replacement,
+                        isRegex: rule.isRegex,
+                        description: rule.description
+                    )
+                }
+                customRules.append(ruleToInsert)
+                added += 1
+            }
+        }
+        if added > 0 {
+            saveCustomRules()
+            spellcheckRevision += 1
+        }
+        return added
+    }
+
+    // MARK: - Shareable AXIF Export & Import
+
+    func exportCleanWithAXIFFooter(for note: StoredNote? = nil) -> String? {
+        let target = note ?? selectedNote
+        guard let doc = target?.compiledDocument(urlSafeDash: urlSafeDash, rules: customRules) else {
+            return nil
+        }
+        return try? doc.exportCleanWithAXIFFooter(useBase64: true)
+    }
+
+    func exportSlogBogBBCode(for note: StoredNote? = nil) -> String? {
+        let target = note ?? selectedNote
+        guard let doc = target?.compiledDocument(urlSafeDash: urlSafeDash, rules: customRules) else {
+            return nil
+        }
+        return try? doc.exportSlogBogBBCode()
+    }
+
+    @discardableResult
+    func importSharedAXIF(_ payload: String, folder: NoteFolder = .quickNotes) throws -> AXIFImportResult {
+        let bundle = try AXIFDocument.parseSharedBundle(payload)
+        let importedRulesCount = importCustomRules(bundle.metadata.rules)
+
+        let rawText: String
+        if let reconstructed = bundle.reconstructedRawText, !reconstructed.isEmpty {
+            rawText = reconstructed
+        } else if let norm = bundle.normalizedText, !norm.isEmpty {
+            rawText = norm
+        } else {
+            var lines: [String] = [
+                bundle.title ?? "Imported AXIF • \(bundle.metadata.acode9)",
+                "Acode9: \(bundle.metadata.acode9) | Jesus Clock: \(bundle.metadata.jesusClock)"
+            ]
+            if !bundle.metadata.entries.isEmpty {
+                lines.append("Indexed MUNSC tokens:")
+                for entry in bundle.metadata.entries {
+                    lines.append("- \(entry.token) -> \(entry.normalizedForm) (\(entry.munscRule) @\(entry.offset))")
+                }
+            }
+            rawText = lines.joined(separator: "\n")
+        }
+
+        let now = Date()
+        let formattedCode = urlSafeDash
+            ? ((try? Acode9.toDash(bundle.metadata.acode9)) ?? bundle.metadata.acode9)
+            : ((try? Acode9.toCaret(bundle.metadata.acode9)) ?? bundle.metadata.acode9)
+
+        let newNote = StoredNote(
+            rawText: rawText,
+            ownerAcode9: formattedCode,
+            folder: folder,
+            isPinned: false,
+            createdAt: now,
+            updatedAt: now
+        )
+        notes.insert(newNote, at: 0)
+        activeSidebarFilter = .all
+        selectedNoteID = newNote.id
+        save()
+        spellcheckRevision += 1
+        return AXIFImportResult(note: newNote, bundle: bundle, importedRulesCount: importedRulesCount)
+    }
+
+    // MARK: - A3odex Browser & "Where's Norma?" Demo
+
+    func insertA3odexToken(_ token: String) {
+        if selectedNote == nil {
+            createNewNote()
+        }
+        guard let id = selectedNote?.id,
+              let idx = notes.firstIndex(where: { $0.id == id }) else { return }
+
+        let current = notes[idx].rawText
+        let separator: String
+        if current.isEmpty || current.hasSuffix("\n") || current.hasSuffix(" ") {
+            separator = ""
+        } else {
+            separator = " "
+        }
+        notes[idx].rawText = current + separator + token
+        notes[idx].updatedAt = Date()
+        save()
+        spellcheckRevision += 1
+    }
+
+    @discardableResult
+    func importA3odex(from url: URL) throws -> Int {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessed { url.stopAccessingSecurityScopedResource() }
+        }
+        let data = try Data(contentsOf: url)
+        let decoded = try A3odexCatalog.decodeJSON(data)
+        var merged = decoded
+        for starter in A3odexCatalog.starterEntries {
+            if !merged.contains(where: { $0.token == starter.token }) {
+                merged.append(starter)
+            }
+        }
+        a3odexEntries = merged
+        saveA3odex()
+        return decoded.count
+    }
+
+    func runWheresNormaDemo() {
+        let target: StoredNote
+        if let existing = notes.first(where: { $0.folder == .chamberNorma })
+            ?? notes.first(where: { $0.rawText.contains("NormA") }) {
+            target = existing
+        } else {
+            let demoNote = Self.makeSeedNotes().first ?? StoredNote(
+                rawText: "N0rma — Chamber Luncheon & Trailhead Log\nMet NormA at the trailhead, confirmed coordinates with Norm4, and archived Norma4 in the AXIF ledger.",
+                ownerAcode9: "Ab2p^a40z",
+                folder: .chamberNorma,
+                isPinned: true
+            )
+            notes.insert(demoNote, at: 0)
+            save()
+            target = demoNote
+        }
+
+        if !filteredNotes.contains(where: { $0.id == target.id }) {
+            activeSidebarFilter = .folder(target.folder)
+        }
+        selectedNoteID = target.id
+        caseSensitive = true
+        wholeWord = false
+        useRegex = false
+        searchLayer = .dual
+        viewMode = .clean
+        query = "NormA"
+        showFindBar = true
+    }
+
+    // MARK: - Note Editing & CRUD
 
     func updateSelectedFullText(_ newText: String, fontSpans: [FontSizeSpan]? = nil) {
         guard let id = selectedNote?.id,
@@ -478,7 +943,7 @@ final class NotesStore {
 
     func replaceNormalizedSpan(normOffset: Int, normEnd: Int, with replacement: String) {
         guard let note = selectedNote,
-              let doc = note.compiledDocument(urlSafeDash: urlSafeDash),
+              let doc = note.compiledDocument(urlSafeDash: urlSafeDash, rules: customRules),
               let idx = notes.firstIndex(where: { $0.id == note.id }) else { return }
 
         if !notes[idx].foldedBlocks.isEmpty {
@@ -640,46 +1105,114 @@ final class NotesStore {
         )) ?? []
     }
 
+    // MARK: - Persistence
+
     func loadOrSeed() {
-        for candidateURL in [storageURL, backupURL] {
-            if let data = try? Data(contentsOf: candidateURL),
-               let decoded = try? JSONDecoder().decode([StoredNote].self, from: data),
-               !decoded.isEmpty {
-                notes = decoded
-                selectedNoteID = filteredNotes.first?.id
-                return
+        let loaded: [StoredNote]? = withFolderAccess(activeSyncFolderURL) {
+            for candidateURL in [storageURL, backupURL] {
+                if let data = try? Data(contentsOf: candidateURL),
+                   let decoded = try? JSONDecoder().decode([StoredNote].self, from: data),
+                   !decoded.isEmpty {
+                    return decoded
+                }
             }
+            return nil
         }
+
+        if let loaded {
+            notes = loaded
+            selectedNoteID = filteredNotes.first?.id
+            return
+        }
+
         notes = Self.makeSeedNotes()
         selectedNoteID = notes.first?.id
         save()
     }
 
     func save() {
-        let dir = storageURL.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        if let data = try? JSONEncoder().encode(notes) {
-            if FileManager.default.fileExists(atPath: storageURL.path) {
-                try? FileManager.default.copyItem(at: storageURL, to: backupURL)
+        withFolderAccess(activeSyncFolderURL) {
+            let dir = storageURL.deletingLastPathComponent()
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            if let data = try? JSONEncoder().encode(notes) {
+                if FileManager.default.fileExists(atPath: storageURL.path) {
+                    try? FileManager.default.removeItem(at: backupURL)
+                    try? FileManager.default.copyItem(at: storageURL, to: backupURL)
+                }
+                try? data.write(to: storageURL, options: .atomic)
             }
-            try? data.write(to: storageURL, options: .atomic)
+        }
+    }
+
+    private func loadCustomRules() {
+        let loaded: [MUNSCRule]? = withFolderAccess(activeSyncFolderURL) {
+            guard let data = try? Data(contentsOf: munscRulesURL) else { return nil }
+            return try? JSONDecoder().decode([MUNSCRule].self, from: data)
+        }
+        customRules = loaded ?? []
+    }
+
+    private func saveCustomRules() {
+        withFolderAccess(activeSyncFolderURL) {
+            let dir = munscRulesURL.deletingLastPathComponent()
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            if let data = try? encoder.encode(customRules) {
+                try? data.write(to: munscRulesURL, options: .atomic)
+            }
         }
     }
 
     private func loadVault() {
-        if let data = try? Data(contentsOf: vaultURL),
-           let decoded = try? JSONDecoder().decode([Acode9PoolEntry].self, from: data) {
-            unusedAcodeVault = decoded
+        let loaded: [Acode9PoolEntry]? = withFolderAccess(activeSyncFolderURL) {
+            guard let data = try? Data(contentsOf: vaultURL) else { return nil }
+            return try? JSONDecoder().decode([Acode9PoolEntry].self, from: data)
+        }
+        if let loaded {
+            unusedAcodeVault = loaded
         } else {
             harvestUnusedAcodes(count: 10)
         }
     }
 
     private func saveVault() {
-        let dir = vaultURL.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        if let data = try? JSONEncoder().encode(unusedAcodeVault) {
-            try? data.write(to: vaultURL, options: .atomic)
+        withFolderAccess(activeSyncFolderURL) {
+            let dir = vaultURL.deletingLastPathComponent()
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            if let data = try? JSONEncoder().encode(unusedAcodeVault) {
+                try? data.write(to: vaultURL, options: .atomic)
+            }
+        }
+    }
+
+    private func loadA3odex() {
+        let loaded: [A3odexEntry]? = withFolderAccess(activeSyncFolderURL) {
+            guard let data = try? Data(contentsOf: a3odexURL) else { return nil }
+            return try? A3odexCatalog.decodeJSON(data)
+        }
+        if let loaded, !loaded.isEmpty {
+            var merged = loaded
+            for starter in A3odexCatalog.starterEntries {
+                if !merged.contains(where: { $0.token == starter.token }) {
+                    merged.append(starter)
+                }
+            }
+            a3odexEntries = merged
+        } else {
+            a3odexEntries = A3odexCatalog.starterEntries
+        }
+    }
+
+    private func saveA3odex() {
+        withFolderAccess(activeSyncFolderURL) {
+            let dir = a3odexURL.deletingLastPathComponent()
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            if let data = try? encoder.encode(a3odexEntries) {
+                try? data.write(to: a3odexURL, options: .atomic)
+            }
         }
     }
 
