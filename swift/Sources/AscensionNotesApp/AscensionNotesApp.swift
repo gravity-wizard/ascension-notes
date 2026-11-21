@@ -154,13 +154,18 @@ struct AscensionNotesApp: App {
                 .keyboardShortcut("z", modifiers: [.command, .option])
             }
             CommandGroup(after: .pasteboard) {
-                Button("Repeat Last Emoji (\(store.lastInsertedEmoji))") {
+                Button("Repeat / Multiply Emoji (\(store.lastInsertedEmoji))") {
                     store.repeatLastEmoji()
                 }
                 .keyboardShortcut("d", modifiers: .command)
 
-                Menu("Insert Favorite Emoji") {
-                    ForEach(["🔻🔻", "😎", "🐸", "🐬", "🗝️", "🪿", "🆒"], id: \.self) { emoji in
+                Button("Cycle Recent Emojis (\(store.lastInsertedEmoji))") {
+                    store.cycleRecentEmoji()
+                }
+                .keyboardShortcut("d", modifiers: [.command, .shift])
+
+                Menu("Ascender Recent Emojis") {
+                    ForEach(store.recentEmojis.prefix(16), id: \.self) { emoji in
                         Button(emoji) {
                             store.setFavoriteEmojiAndInsert(emoji)
                         }
@@ -806,10 +811,20 @@ struct AscensionNotesRootView: View {
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
-                            .help("Repeat last inserted emoji (Cmd+D) — default DownDittos 🔻🔻")
+                            .help("Repeat / multiply emoji (Cmd+D) — multiply like rabbits!")
+
+                            Button {
+                                store.cycleRecentEmoji()
+                            } label: {
+                                Label("Cycle", systemImage: "arrow.triangle.2.circlepath")
+                                    .font(.caption2)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .help("Cycle recent Ascender emojis (Cmd+Shift+D)")
 
                             Menu {
-                                ForEach(["🔻🔻", "😎", "🐸", "🐬", "🗝️", "🪿", "🆒"], id: \.self) { emoji in
+                                ForEach(store.recentEmojis.prefix(16), id: \.self) { emoji in
                                     Button(emoji) {
                                         store.setFavoriteEmojiAndInsert(emoji)
                                     }
@@ -820,7 +835,7 @@ struct AscensionNotesRootView: View {
                             }
                             .menuStyle(.borderlessButton)
                             .fixedSize()
-                            .help("Quick Favorite Emoji Picker")
+                            .help("Ascender Recent Emojis Picker")
                         }
                     }
 

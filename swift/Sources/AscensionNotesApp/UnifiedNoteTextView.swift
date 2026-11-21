@@ -283,6 +283,7 @@ struct UnifiedNoteTextView: NSViewRepresentable {
                     guard tv.shouldChangeText(in: targetRange, replacementString: snippet) else { return false }
                     tv.replaceCharacters(in: targetRange, with: snippet)
                     tv.didChangeText()
+                    self.store.recordEmojiInsertion(location: safeLoc, emoji: snippet)
                     let newPos = safeLoc + (snippet as NSString).length
                     tv.setSelectedRange(NSRange(location: newPos, length: 0))
                     tv.window?.makeFirstResponder(tv)

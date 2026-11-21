@@ -295,6 +295,19 @@ final class NotesStore {
     var authorAAid: String = "Ab2p^a00z"
     var lastInsertedEmoji: String = "🔻🔻"
 
+    public struct EmojiInsertionRecord {
+        public let noteID: UUID
+        public let location: Int
+        public let emoji: String
+        public let timestamp: Date
+    }
+
+    var lastEmojiInsertionRecord: EmojiInsertionRecord? = nil
+
+    static let starterRecentEmojis: [String] = ["🔻🔻", "🐇", "😎", "🐸", "🐬", "🗝️", "🪿", "🆒"]
+    var recentEmojis: [String] = starterRecentEmojis
+    var recentEmojiCycleIndex: Int = 0
+
     var viewMode: ViewLayerMode = .edit
     var showFindBar: Bool = false
     var showInspector: Bool = false
@@ -328,17 +341,76 @@ final class NotesStore {
         }
     }
 
+    func recordEmojiInsertion(location: Int, emoji: String) {
+        guard let id = selectedNoteID else { return }
+        lastEmojiInsertionRecord = EmojiInsertionRecord(
+            noteID: id,
+            location: location,
+            emoji: emoji,
+            timestamp: Date()
+        )
+        registerRecentEmoji(emoji)
+    }
+
+    func registerRecentEmoji(_ emoji: String) {
+        let clean = emoji.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        if let existingIdx = recentEmojis.firstIndex(of: clean) {
+            recentEmojis.remove(at: existingIdx)
+        }
+        recentEmojis.insert(clean, at: 0)
+        for seed in Self.starterRecentEmojis {
+            if !recentEmojis.contains(seed) {
+                recentEmojis.append(seed)
+            }
+        }
+        if recentEmojis.count > 24 {
+            recentEmojis = Array(recentEmojis.prefix(24))
+        }
+    }
+
     func repeatLastEmoji() {
         let snippet = lastInsertedEmoji.isEmpty ? "🔻🔻" : lastInsertedEmoji
         if let handler = activeTextViewActionHandler, handler(.insertText(snippet)) {
             return
         }
         guard let note = selectedNote else { return }
+        let newPos = (note.rawText as NSString).length
         updateSelectedFullText(note.rawText + snippet, fontSpans: note.fontSpans)
+        recordEmojiInsertion(location: newPos, emoji: snippet)
+    }
+
+    func cycleRecentEmoji() {
+        guard !recentEmojis.isEmpty else { return }
+        recentEmojiCycleIndex = (recentEmojiCycleIndex + 1) % recentEmojis.count
+        let nextEmoji = recentEmojis[recentEmojiCycleIndex]
+        let oldEmoji = lastInsertedEmoji
+        lastInsertedEmoji = nextEmoji
+
+        // If user just inserted an emoji within 4 seconds in the active note, swap it in place
+        if let rec = lastEmojiInsertionRecord,
+           rec.noteID == selectedNoteID,
+           Date().timeIntervalSince(rec.timestamp) < 4.0,
+           rec.emoji == oldEmoji {
+            let oldLen = (oldEmoji as NSString).length
+            if let handler = activeTextViewActionHandler,
+               handler(.replaceRange(location: rec.location, length: oldLen, with: nextEmoji, learnWord: nil)) {
+                lastEmojiInsertionRecord = EmojiInsertionRecord(
+                    noteID: rec.noteID,
+                    location: rec.location,
+                    emoji: nextEmoji,
+                    timestamp: Date()
+                )
+                return
+            }
+        }
     }
 
     func setFavoriteEmojiAndInsert(_ emoji: String) {
         lastInsertedEmoji = emoji
+        if let idx = recentEmojis.firstIndex(of: emoji) {
+            recentEmojiCycleIndex = idx
+        }
         repeatLastEmoji()
     }
 
@@ -1471,12 +1543,34 @@ final class NotesStore {
         if let loaded {
             notes = loaded
             selectedNoteID = filteredNotes.first?.id
+            harvestAscenderRecentEmojis()
             return
         }
 
         notes = Self.makeSeedNotes()
         selectedNoteID = notes.first?.id
+        harvestAscenderRecentEmojis()
         save()
+    }
+
+    func harvestAscenderRecentEmojis() {
+        var found: [String] = []
+        for note in notes.prefix(40) {
+            for char in note.rawText {
+                for scalar in char.unicodeScalars {
+                    if scalar.properties.isEmoji && (scalar.properties.isEmojiPresentation || scalar.value > 0x2388) {
+                        let s = String(char)
+                        if s != "🔻" && !found.contains(s) {
+                            found.append(s)
+                        }
+                        break
+                    }
+                }
+            }
+        }
+        for em in found.reversed() {
+            registerRecentEmoji(em)
+        }
     }
 
     func save() {
