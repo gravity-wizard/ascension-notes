@@ -28,11 +28,30 @@ final class AscensionCoreTests: XCTestCase {
 
         XCTAssertEqual(try Acode9.toDash("Ab2p^a40z"), "Ab2p-a40z")
         XCTAssertEqual(try Acode9.toCaret("Ab2p-a40z"), "Ab2p^a40z")
+        XCTAssertEqual(Base38Clock.toURLSafe("2p|^6a"), "2p_-6a")
+        XCTAssertEqual(Base38Clock.fromURLSafe("2p_-6a"), "2p|^6a")
+        XCTAssertEqual(try Acode9.toDash("Ab2p^|a^z"), "Ab2p-_a-z")
+        XCTAssertEqual(try Acode9.toCaret("Ab2p-_a-z"), "Ab2p^|a^z")
+    }
+
+    func testSafeJesusClockPausesOnTriple6AndBadWords() throws {
+        let ts666 = try Base38Clock.decodeJesusClock("2666ab")
+        let reading666 = Base38Clock.safeJesusClock(unixSeconds: ts666)
+        XCTAssertTrue(reading666.isPaused)
+        XCTAssertEqual(reading666.rawClock, "2666ab")
+        XCTAssertEqual(reading666.clock, "2665^^")
+        XCTAssertTrue(Base38Clock.isCleanClock(reading666.clock))
+
+        let tsBad = try Base38Clock.decodeJesusClock("2shit1")
+        let readingBad = Base38Clock.safeJesusClock(unixSeconds: tsBad)
+        XCTAssertTrue(readingBad.isPaused)
+        XCTAssertTrue(Base38Clock.isCleanClock(readingBad.clock))
     }
 
     func testYouTubeStyleIDFilterAndRollingPool() throws {
         XCTAssertFalse(Acode9.isCleanID("Ab2p^shit").clean)
         XCTAssertFalse(Acode9.isCleanID("Ab2p^sh1t").clean)
+        XCTAssertFalse(Acode9.isCleanID("Ab2p^666z").clean)
         XCTAssertFalse(Acode9.isCleanID("Ab2p^aaaa").clean)
         XCTAssertFalse(Acode9.isCleanID("Ac3x^chch", blockRepeatedPairs: true).clean)
         XCTAssertFalse(Acode9.isCleanID("Ab2p-a40z", existingPool: ["Ab2p^a40z"]).clean)

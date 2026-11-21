@@ -50,6 +50,18 @@ public enum SidebarFilter: Hashable, Identifiable, Sendable {
     }
 }
 
+public struct FontSizeSpan: Codable, Hashable, Sendable {
+    public var location: Int
+    public var length: Int
+    public var size: Double
+
+    public init(location: Int, length: Int, size: Double) {
+        self.location = location
+        self.length = length
+        self.size = size
+    }
+}
+
 public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
     public var id: UUID
     public var rawText: String
@@ -59,9 +71,10 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
     public var createdAt: Date
     public var updatedAt: Date
     public var foldedBlocks: [String: String]
+    public var fontSpans: [FontSizeSpan]
 
     enum CodingKeys: String, CodingKey {
-        case id, rawText, ownerAcode9, folder, isPinned, createdAt, updatedAt, foldedBlocks
+        case id, rawText, ownerAcode9, folder, isPinned, createdAt, updatedAt, foldedBlocks, fontSpans
     }
 
     public init(
@@ -72,7 +85,8 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
         isPinned: Bool = false,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
-        foldedBlocks: [String: String] = [:]
+        foldedBlocks: [String: String] = [:],
+        fontSpans: [FontSizeSpan] = []
     ) {
         self.id = id
         self.rawText = rawText
@@ -82,6 +96,7 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.foldedBlocks = foldedBlocks
+        self.fontSpans = fontSpans
     }
 
     public init(from decoder: Decoder) throws {
@@ -94,9 +109,9 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
         foldedBlocks = try c.decodeIfPresent([String: String].self, forKey: .foldedBlocks) ?? [:]
+        fontSpans = try c.decodeIfPresent([FontSizeSpan].self, forKey: .fontSpans) ?? []
     }
 
-    /// Apple Notes convention: Line 1 is the note title.
     public var derivedTitle: String {
         rawText
             .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
@@ -109,7 +124,6 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
         return trimmed.isEmpty ? "New Note" : trimmed
     }
 
-    /// Everything after the first newline.
     public var derivedBody: String {
         guard let nl = rawText.firstIndex(of: "\n") else {
             return ""
@@ -117,7 +131,6 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
         return String(rawText[rawText.index(after: nl)...])
     }
 
-    /// Expands any folded block tokens before AXIF indexing & Clean View rendering.
     public var expandedRawText: String {
         guard !foldedBlocks.isEmpty else { return rawText }
         var out = rawText
@@ -162,7 +175,7 @@ final class NotesStore {
     }
 
     var notes: [StoredNote] = []
-    var sidebarFilter: SidebarFilter? = .all
+    var activeSidebarFilter: SidebarFilter = .all
     var selectedNoteID: UUID?
 
     var viewMode: ViewLayerMode = .edit
@@ -182,16 +195,22 @@ final class NotesStore {
     var urlSafeDash: Bool = false
 
     var rollingPool: [Acode9PoolEntry] = []
-    var liveClockText: String = Base38Clock.jesusClock(minWidth: 2)
+    var unusedAcodeVault: [Acode9PoolEntry] = []
+    var liveClockText: String = Base38Clock.safeJesusClock(minWidth: 2).clock
+    var rawClockText: String = Base38Clock.jesusClock(minWidth: 2)
+    var clockIsPaused: Bool = false
 
     private let storageURL: URL
     private let backupURL: URL
+    private let vaultURL: URL
 
     init() {
         let appSupport = URL.applicationSupportDirectory.appendingPathComponent("AscensionNotes", isDirectory: true)
         self.storageURL = appSupport.appendingPathComponent("notes.json")
         self.backupURL = appSupport.appendingPathComponent("notes.backup.json")
+        self.vaultURL = appSupport.appendingPathComponent("acode_vault.json")
         loadOrSeed()
+        loadVault()
         refreshClock()
         generateNextPool()
     }
@@ -200,9 +219,20 @@ final class NotesStore {
         storageURL.deletingLastPathComponent().path
     }
 
+    func selectSidebarFilter(_ filter: SidebarFilter) {
+        activeSidebarFilter = filter
+        if let firstMatch = filteredNotes.first {
+            selectedNoteID = firstMatch.id
+        } else {
+            selectedNoteID = nil
+        }
+    }
+
     var selectedNote: StoredNote? {
-        guard let id = selectedNoteID else { return filteredNotes.first }
-        return notes.first(where: { $0.id == id }) ?? filteredNotes.first
+        if let id = selectedNoteID, let match = filteredNotes.first(where: { $0.id == id }) {
+            return match
+        }
+        return filteredNotes.first
     }
 
     var selectedDocument: AXIFDocument? {
@@ -211,7 +241,7 @@ final class NotesStore {
 
     var filteredNotes: [StoredNote] {
         let base: [StoredNote]
-        switch sidebarFilter ?? .all {
+        switch activeSidebarFilter {
         case .all:
             base = notes
         case .pinned:
@@ -294,24 +324,29 @@ final class NotesStore {
         }
     }
 
-    func expandEditorFontSize() {
-        editorFontSize = min(32.0, editorFontSize + 1.5)
-    }
-
-    func shrinkEditorFontSize() {
-        editorFontSize = max(11.0, editorFontSize - 1.5)
-    }
-
-    func resetEditorFontSize() {
-        editorFontSize = 15.0
-    }
-
-    func updateSelectedFullText(_ newText: String) {
+    func updateSelectedFullText(_ newText: String, fontSpans: [FontSizeSpan]? = nil) {
         guard let id = selectedNote?.id,
               let idx = notes.firstIndex(where: { $0.id == id }) else { return }
+        var changed = false
         if notes[idx].rawText != newText {
             notes[idx].rawText = newText
             notes[idx].updatedAt = Date()
+            changed = true
+        }
+        if let spans = fontSpans, notes[idx].fontSpans != spans {
+            notes[idx].fontSpans = spans
+            changed = true
+        }
+        if changed {
+            save()
+        }
+    }
+
+    func updateSelectedFontSpans(_ spans: [FontSizeSpan]) {
+        guard let id = selectedNote?.id,
+              let idx = notes.firstIndex(where: { $0.id == id }) else { return }
+        if notes[idx].fontSpans != spans {
+            notes[idx].fontSpans = spans
             save()
         }
     }
@@ -353,7 +388,6 @@ final class NotesStore {
         }
     }
 
-    /// Create a fold marker and store its original text without touching rawText (NSTextView commits via replaceCharacters).
     func registerFold(original: String) -> String? {
         guard let id = selectedNote?.id,
               let idx = notes.firstIndex(where: { $0.id == id }) else { return nil }
@@ -379,58 +413,6 @@ final class NotesStore {
               let original = notes[idx].foldedBlocks.removeValue(forKey: marker) else { return nil }
         save()
         return original
-    }
-
-    /// Fold a selected text span into a lossless placeholder marker stored on the note.
-    func foldBlock(rangeInRaw nsRange: NSRange) -> String? {
-        guard let id = selectedNote?.id,
-              let idx = notes.firstIndex(where: { $0.id == id }),
-              nsRange.length > 0 else { return nil }
-        let raw = notes[idx].rawText
-        guard let swiftRange = Range(nsRange, in: raw) else { return nil }
-        let block = String(raw[swiftRange])
-        guard !block.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-
-        let lineCount = max(1, block.split(separator: "\n", omittingEmptySubsequences: false).count)
-        let firstLine = block
-            .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true)
-            .first
-            .map { String($0).trimmingCharacters(in: .whitespaces) } ?? "Block"
-        let snippet = String(firstLine.prefix(24)).replacingOccurrences(of: "]", with: ")")
-        let shortId = String(UUID().uuidString.prefix(4)).lowercased()
-        let marker = "▸[Folded \(lineCount)L: \(snippet)… #\(shortId)]"
-
-        var updated = raw
-        updated.replaceSubrange(swiftRange, with: marker)
-        notes[idx].foldedBlocks[marker] = block
-        notes[idx].rawText = updated
-        notes[idx].updatedAt = Date()
-        save()
-        return updated
-    }
-
-    /// Unfold a specific folded marker back into rawText.
-    func unfoldMarker(_ marker: String) -> String? {
-        guard let id = selectedNote?.id,
-              let idx = notes.firstIndex(where: { $0.id == id }),
-              let original = notes[idx].foldedBlocks.removeValue(forKey: marker) else { return nil }
-        let updated = notes[idx].rawText.replacingOccurrences(of: marker, with: original)
-        notes[idx].rawText = updated
-        notes[idx].updatedAt = Date()
-        save()
-        return updated
-    }
-
-    func unfoldAllBlocksInSelectedNote() -> String? {
-        guard let id = selectedNote?.id,
-              let idx = notes.firstIndex(where: { $0.id == id }),
-              !notes[idx].foldedBlocks.isEmpty else { return nil }
-        let expanded = notes[idx].expandedRawText
-        notes[idx].foldedBlocks.removeAll()
-        notes[idx].rawText = expanded
-        notes[idx].updatedAt = Date()
-        save()
-        return expanded
     }
 
     static func autoCapitalizeLeading(oldText: String, newText: String) -> String {
@@ -499,7 +481,6 @@ final class NotesStore {
               let doc = note.compiledDocument(urlSafeDash: urlSafeDash),
               let idx = notes.firstIndex(where: { $0.id == note.id }) else { return }
 
-        // Expand folds first so normalized spans align with rawText
         if !notes[idx].foldedBlocks.isEmpty {
             notes[idx].rawText = notes[idx].expandedRawText
             notes[idx].foldedBlocks.removeAll()
@@ -541,14 +522,10 @@ final class NotesStore {
 
     func createNewNote() {
         let now = Date()
-        let freshCode = (try? Acode9.generate(
-            unixSeconds: Int64(now.timeIntervalSince1970),
-            mode: .good1a,
-            urlSafe: urlSafeDash
-        )) ?? "Ab2p^a40z"
+        let freshCode = claimUnusedAcode(fallbackNow: Int64(now.timeIntervalSince1970))
 
         let targetFolder: NoteFolder
-        if case .folder(let f) = sidebarFilter ?? .all {
+        if case .folder(let f) = activeSidebarFilter {
             targetFolder = f
         } else {
             targetFolder = .quickNotes
@@ -594,7 +571,62 @@ final class NotesStore {
     }
 
     func refreshClock() {
-        liveClockText = Base38Clock.jesusClock(minWidth: 2)
+        let nowSec = Int64(Date().timeIntervalSince1970)
+        let reading = Base38Clock.safeJesusClock(unixSeconds: nowSec, minWidth: 2, urlSafe: urlSafeDash)
+        liveClockText = reading.clock
+        rawClockText = reading.rawClock
+        clockIsPaused = reading.isPaused
+
+        // Harvest clean Acodes that would otherwise go unused whenever the clock is not paused
+        if !reading.isPaused && unusedAcodeVault.count < 120 {
+            let alreadyHasSecond = unusedAcodeVault.contains { $0.timestamp == nowSec }
+            if !alreadyHasSecond {
+                let existingSet = Set(unusedAcodeVault.map(\.acode9) + notes.map(\.ownerAcode9))
+                if let harvested = try? Acode9.generate(
+                    unixSeconds: nowSec,
+                    mode: .good1a,
+                    urlSafe: urlSafeDash,
+                    existingPool: existingSet
+                ) {
+                    unusedAcodeVault.insert(
+                        Acode9PoolEntry(acode9: harvested, timestamp: nowSec, jesusClock: reading.clock, mode: .good1a),
+                        at: 0
+                    )
+                    if unusedAcodeVault.count > 120 {
+                        unusedAcodeVault.removeLast(unusedAcodeVault.count - 120)
+                    }
+                    saveVault()
+                }
+            }
+        }
+    }
+
+    func harvestUnusedAcodes(count: Int = 12) {
+        let nowSec = Int64(Date().timeIntervalSince1970)
+        let existingSet = Set(unusedAcodeVault.map(\.acode9) + notes.map(\.ownerAcode9))
+        if let batch = try? Acode9.generateRollingPool(
+            count: count,
+            startUnixSeconds: nowSec,
+            cadenceSeconds: 1,
+            mode: .good1a,
+            urlSafe: urlSafeDash,
+            existingPool: existingSet
+        ) {
+            unusedAcodeVault.insert(contentsOf: batch, at: 0)
+            if unusedAcodeVault.count > 120 {
+                unusedAcodeVault.removeLast(unusedAcodeVault.count - 120)
+            }
+            saveVault()
+        }
+    }
+
+    func claimUnusedAcode(fallbackNow: Int64 = Int64(Date().timeIntervalSince1970)) -> String {
+        if let first = unusedAcodeVault.first {
+            unusedAcodeVault.removeFirst()
+            saveVault()
+            return urlSafeDash ? ((try? Acode9.toDash(first.acode9)) ?? first.acode9) : ((try? Acode9.toCaret(first.acode9)) ?? first.acode9)
+        }
+        return (try? Acode9.generate(unixSeconds: fallbackNow, mode: .good1a, urlSafe: urlSafeDash)) ?? "Ab2p^a40z"
     }
 
     func generateNextPool() {
@@ -631,6 +663,23 @@ final class NotesStore {
                 try? FileManager.default.copyItem(at: storageURL, to: backupURL)
             }
             try? data.write(to: storageURL, options: .atomic)
+        }
+    }
+
+    private func loadVault() {
+        if let data = try? Data(contentsOf: vaultURL),
+           let decoded = try? JSONDecoder().decode([Acode9PoolEntry].self, from: data) {
+            unusedAcodeVault = decoded
+        } else {
+            harvestUnusedAcodes(count: 10)
+        }
+    }
+
+    private func saveVault() {
+        let dir = vaultURL.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(unusedAcodeVault) {
+            try? data.write(to: vaultURL, options: .atomic)
         }
     }
 

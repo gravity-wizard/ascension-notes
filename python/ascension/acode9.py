@@ -34,6 +34,7 @@ ALL_MODES: frozenset[str] = frozenset({"standard", "b38", "good1a", "second1a"})
 # YouTube-style ID safety filter substrings (checked case-insensitively across
 # tail4, alphanumeric core, and up to 11-char candidate IDs).
 DEFAULT_BLOCKED_SUBSTRINGS: tuple[str, ...] = (
+    "666",
     "anal",
     "anus",
     "arse",
@@ -91,11 +92,15 @@ def lead_letter_for_clock_char(clock_char: str) -> str:
       '1'..'9' -> 'a'..'i' (e.g., '2'->'b', '3'->'c', '8'->'h')
       '0'      -> 'z'
       'a'..'z' -> same lowercase letter
-      '|'      -> 'x'
-      '^'      -> 'y'
+      '|' / '_' -> 'x'
+      '^' / '-' -> 'y'
     """
     if not isinstance(clock_char, str) or len(clock_char) != 1:
         raise ValueError(f"Expected single character, got {clock_char!r}")
+    if clock_char == "_":
+        clock_char = "|"
+    elif clock_char == "-":
+        clock_char = "^"
     if clock_char not in B38_SET:
         raise ValueError(f"Clock character {clock_char!r} is not in B38 alphabet")
 
@@ -113,21 +118,25 @@ def lead_letter_for_clock_char(clock_char: str) -> str:
 
 
 def to_dash(code: str) -> str:
-    """Convert center mountain '^' to '-' for URL-safe / filename-safe mode."""
+    """Convert canonical '^' and '|' to URL/filename-safe '-' and '_'."""
     if not isinstance(code, str) or len(code) != 9:
         raise ValueError(f"Acode9 must be 9 characters, got {code!r}")
     if code[4] not in (CENTER_CARET, CENTER_DASH):
         raise ValueError(f"Invalid center character at index 4 in {code!r}")
-    return f"{code[:4]}{CENTER_DASH}{code[5:]}"
+    left = code[:4].replace("|", "_")
+    right = code[5:].replace("^", "-").replace("|", "_")
+    return f"{left}{CENTER_DASH}{right}"
 
 
 def to_caret(code: str) -> str:
-    """Convert URL-safe center '-' back to canonical mountain '^'."""
+    """Convert URL-safe '-' and '_' back to canonical Base-38 '^' and '|'."""
     if not isinstance(code, str) or len(code) != 9:
         raise ValueError(f"Acode9 must be 9 characters, got {code!r}")
     if code[4] not in (CENTER_CARET, CENTER_DASH):
         raise ValueError(f"Invalid center character at index 4 in {code!r}")
-    return f"{code[:4]}{CENTER_CARET}{code[5:]}"
+    left = code[:4].replace("_", "|")
+    right = code[5:].replace("-", "^").replace("_", "|")
+    return f"{left}{CENTER_CARET}{right}"
 
 
 def is_good1a_tail(tail4: str) -> bool:
@@ -192,10 +201,14 @@ def is_clean_id(
 
     tail_lower = tail4.lower()
     core_lower = core.lower()
+    if "666" in tail_lower or "666" in core_lower:
+        reasons.append("blocked_substring:666")
     tail_leet = tail_lower.translate(_LEET_MAP)
     core_leet = core_lower.translate(_LEET_MAP)
 
     for bad in blocked:
+        if bad == "666":
+            continue
         if bad in tail_lower or bad in core_lower or bad in tail_leet or bad in core_leet:
             reasons.append(f"blocked_substring:{bad}")
             break
@@ -261,10 +274,7 @@ def parse_acode9(code: str, *, allow_dash: bool = True) -> Acode9Parts:
         raise ValueError(f"Acode9 must be exactly 9 characters, got {len(code)} ({code!r})")
 
     big_a = code[0]
-    lead_letter = code[1]
-    clock2 = code[2:4]
     center = code[4]
-    tail4 = code[5:9]
 
     if big_a != BIG_A:
         raise ValueError(f"Acode9[0] must be 'A', got {big_a!r}")
@@ -272,6 +282,11 @@ def parse_acode9(code: str, *, allow_dash: bool = True) -> Acode9Parts:
     allowed_centers = (CENTER_CARET, CENTER_DASH) if allow_dash else (CENTER_CARET,)
     if center not in allowed_centers:
         raise ValueError(f"Acode9[4] center must be one of {allowed_centers}, got {center!r}")
+
+    normalized = to_caret(code) if allow_dash else code
+    lead_letter = normalized[1]
+    clock2 = normalized[2:4]
+    tail4 = normalized[5:9]
 
     for idx, ch in enumerate(clock2):
         if ch not in B38_SET:
@@ -290,7 +305,7 @@ def parse_acode9(code: str, *, allow_dash: bool = True) -> Acode9Parts:
 
     mode = "good1a" if is_good1a_tail(tail4) else "b38"
     canonical = f"{big_a}{lead_letter}{clock2}{CENTER_CARET}{tail4}"
-    url_safe = f"{big_a}{lead_letter}{clock2}{CENTER_DASH}{tail4}"
+    url_safe = to_dash(canonical)
 
     return Acode9Parts(
         raw=code,

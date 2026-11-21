@@ -3,18 +3,19 @@ import AppKit
 import SwiftUI
 
 /// Unified macOS NSTextView editor:
-/// - Line 1 automatically styled as large bold Title; Cmd+A selects Title + Body together.
+/// - Line 1 styled as large bold Title; Cmd+A selects Title + Body together.
+/// - Cmd+ / Cmd- grow/shrink ONLY the selected text (or cursor typing size), never folding.
+/// - Folding is completely separate (Right-click -> Folding, or Cmd+Option+[ / ]).
 /// - Safe against Spacebar autocomplete crashes (never mutates textStorage during marked text).
-/// - Respects Auto-Cap OFF completely (disables macOS automatic text completion & autocorrect).
-/// - Bottom overscroll padding lets you scroll text up the screen without adding blank lines.
-/// - Right-click context menu offers Format & Folding options + Cmd+/Cmd- shrink/expand.
+/// - Bottom overscroll padding lets you scroll text up the screen without blank lines.
 struct UnifiedNoteTextView: NSViewRepresentable {
     @Bindable var store: NotesStore
     let noteID: UUID
     let text: String
-    let fontSize: Double
+    let defaultFontSize: Double
     let autoCapitalizeNewLines: Bool
     let foldedBlocks: [String: String]
+    let fontSpans: [FontSizeSpan]
 
     func makeCoordinator() -> Coordinator {
         Coordinator(store: store)
@@ -44,7 +45,6 @@ struct UnifiedNoteTextView: NSViewRepresentable {
         textView.textContainerInset = NSSize(width: 24, height: 10)
         textView.textContainer?.widthTracksTextView = true
 
-        // Keep red-underline continuous spellcheck ON, while controlling auto-cap/autocorrect cleanly
         textView.isContinuousSpellCheckingEnabled = true
         textView.isGrammarCheckingEnabled = true
         textView.isAutomaticQuoteSubstitutionEnabled = false
@@ -52,13 +52,12 @@ struct UnifiedNoteTextView: NSViewRepresentable {
         applyAutoCapBehavior(to: textView, enabled: autoCapitalizeNewLines)
 
         textView.string = text
-        applyTypography(to: textView, fontSize: fontSize)
+        applyAllTypography(to: textView, defaultSize: defaultFontSize, spans: fontSpans)
 
         scrollView.documentView = textView
         context.coordinator.textView = textView
         context.coordinator.lastNoteID = noteID
         context.coordinator.lastSyncedText = text
-        context.coordinator.lastFontSize = fontSize
         context.coordinator.lastAutoCap = autoCapitalizeNewLines
         return scrollView
     }
@@ -67,7 +66,6 @@ struct UnifiedNoteTextView: NSViewRepresentable {
         guard let textView = scrollView.documentView as? AscensionNSTextView else { return }
         context.coordinator.store = store
 
-        // Keep generous overscroll so user can always scroll text up without blank lines
         let desiredBottom = CGFloat(max(280.0, Double(scrollView.bounds.height) * 0.65))
         if abs(scrollView.contentInsets.bottom - desiredBottom) > 8 {
             scrollView.contentInsets = NSEdgeInsets(top: 6, left: 0, bottom: desiredBottom, right: 0)
@@ -80,24 +78,18 @@ struct UnifiedNoteTextView: NSViewRepresentable {
 
         let switchedNote = context.coordinator.lastNoteID != noteID
         let externalTextChanged = text != context.coordinator.lastSyncedText && text != textView.string
-        let fontChanged = abs(context.coordinator.lastFontSize - fontSize) > 0.1
 
-        // Never overwrite NSTextView while inline autocomplete/marked text is active
         if (switchedNote || externalTextChanged) && !textView.hasMarkedText() {
             let previousSelection = textView.selectedRange()
             textView.string = text
             context.coordinator.lastNoteID = noteID
             context.coordinator.lastSyncedText = text
-            applyTypography(to: textView, fontSize: fontSize)
-            context.coordinator.lastFontSize = fontSize
+            applyAllTypography(to: textView, defaultSize: defaultFontSize, spans: fontSpans)
 
             if !switchedNote {
                 let clampedLoc = min(previousSelection.location, (text as NSString).length)
                 textView.setSelectedRange(NSRange(location: clampedLoc, length: 0))
             }
-        } else if fontChanged && !textView.hasMarkedText() {
-            applyTypography(to: textView, fontSize: fontSize)
-            context.coordinator.lastFontSize = fontSize
         }
     }
 
@@ -107,18 +99,18 @@ struct UnifiedNoteTextView: NSViewRepresentable {
         textView.isAutomaticTextReplacementEnabled = enabled
     }
 
-    private func applyTypography(to textView: NSTextView, fontSize: Double) {
+    private func applyAllTypography(to textView: NSTextView, defaultSize: Double, spans: [FontSizeSpan]) {
         guard let storage = textView.textStorage else { return }
         let fullStr = storage.string as NSString
         let totalLen = fullStr.length
         guard totalLen > 0 else {
-            textView.font = NSFont.systemFont(ofSize: fontSize)
+            textView.font = NSFont.systemFont(ofSize: defaultSize)
             return
         }
 
-        let bodyFont = NSFont.systemFont(ofSize: fontSize)
-        let titleFont = NSFont.systemFont(ofSize: fontSize + 7.0, weight: .bold)
-        let foldFont = NSFont.monospacedSystemFont(ofSize: max(11.0, fontSize - 1.5), weight: .semibold)
+        let bodyFont = NSFont.systemFont(ofSize: defaultSize)
+        let titleFont = NSFont.systemFont(ofSize: defaultSize + 7.0, weight: .bold)
+        let foldFont = NSFont.monospacedSystemFont(ofSize: max(11.0, defaultSize - 1.5), weight: .semibold)
         let bodyColor = NSColor.labelColor
         let foldBg = NSColor.systemYellow.withAlphaComponent(0.22)
 
@@ -131,14 +123,24 @@ struct UnifiedNoteTextView: NSViewRepresentable {
             [.font: bodyFont, .foregroundColor: bodyColor, .paragraphStyle: paragraph],
             range: NSRange(location: 0, length: totalLen)
         )
+        storage.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: totalLen))
 
-        // Line 1 = Bold large Apple Notes Title
         let firstLineRange = fullStr.lineRange(for: NSRange(location: 0, length: 0))
         if firstLineRange.length > 0 {
             storage.addAttribute(.font, value: titleFont, range: firstLineRange)
         }
 
-        // Highlight folded block markers cleanly
+        for span in spans {
+            let loc = max(0, min(span.location, totalLen))
+            let len = max(0, min(span.length, totalLen - loc))
+            guard len > 0 else { continue }
+            let isTitle = loc < firstLineRange.upperBound
+            let font = isTitle
+                ? NSFont.systemFont(ofSize: span.size, weight: .bold)
+                : NSFont.systemFont(ofSize: span.size)
+            storage.addAttribute(.font, value: font, range: NSRange(location: loc, length: len))
+        }
+
         for marker in foldedBlocks.keys {
             var searchStart = 0
             while searchStart < totalLen {
@@ -148,10 +150,7 @@ struct UnifiedNoteTextView: NSViewRepresentable {
                     range: NSRange(location: searchStart, length: totalLen - searchStart)
                 )
                 if found.location == NSNotFound { break }
-                storage.addAttributes(
-                    [.font: foldFont, .backgroundColor: foldBg],
-                    range: found
-                )
+                storage.addAttributes([.font: foldFont, .backgroundColor: foldBg], range: found)
                 searchStart = found.location + found.length
             }
         }
@@ -170,7 +169,6 @@ struct UnifiedNoteTextView: NSViewRepresentable {
         weak var textView: AscensionNSTextView?
         var lastNoteID: UUID?
         var lastSyncedText: String = ""
-        var lastFontSize: Double = 15.0
         var lastAutoCap: Bool = false
 
         init(store: NotesStore) {
@@ -178,16 +176,43 @@ struct UnifiedNoteTextView: NSViewRepresentable {
         }
 
         func handleTextDidChange(on tv: AscensionNSTextView) {
-            // Wait until IME / inline predictive autocomplete settles before touching store or attributes
             if tv.hasMarkedText() {
                 return
             }
             let updated = tv.string
+            let spans = extractFontSpans(from: tv)
             if updated != lastSyncedText {
                 lastSyncedText = updated
-                store.updateSelectedFullText(updated)
+                store.updateSelectedFullText(updated, fontSpans: spans)
+            } else {
+                store.updateSelectedFontSpans(spans)
             }
-            reapplyVisualLine1AndFolds(on: tv)
+            reapplyVisualLine1AndFoldsPreservingSpans(on: tv)
+        }
+
+        func persistCurrentSpans(from tv: AscensionNSTextView) {
+            store.updateSelectedFontSpans(extractFontSpans(from: tv))
+        }
+
+        func extractFontSpans(from tv: AscensionNSTextView) -> [FontSizeSpan] {
+            guard let storage = tv.textStorage else { return [] }
+            let ns = storage.string as NSString
+            let len = ns.length
+            guard len > 0 else { return [] }
+            let line1End = ns.lineRange(for: NSRange(location: 0, length: 0)).upperBound
+            let defaultBodySize = store.editorFontSize
+            let defaultTitleSize = defaultBodySize + 7.0
+
+            var spans: [FontSizeSpan] = []
+            storage.enumerateAttribute(.font, in: NSRange(location: 0, length: len)) { val, range, _ in
+                guard let font = val as? NSFont else { return }
+                let size = Double(font.pointSize)
+                let expected = (range.location < line1End) ? defaultTitleSize : defaultBodySize
+                if abs(size - expected) > 0.25 {
+                    spans.append(FontSizeSpan(location: range.location, length: range.length, size: size))
+                }
+            }
+            return spans
         }
 
         func enrichContextMenu(
@@ -198,12 +223,42 @@ struct UnifiedNoteTextView: NSViewRepresentable {
             let enriched = (baseMenu.copy() as? NSMenu) ?? NSMenu()
             enriched.insertItem(.separator(), at: 0)
 
-            // Folding submenu
+            // Separate Text Size submenu (Only selected text grows/shrinks)
+            let sizeMenu = NSMenu(title: "Text Size")
+            let growItem = NSMenuItem(
+                title: "Grow Selected Text (Cmd +)",
+                action: #selector(AscensionNSTextView.growSelectedText(_:)),
+                keyEquivalent: ""
+            )
+            growItem.target = view
+            sizeMenu.addItem(growItem)
+
+            let shrinkItem = NSMenuItem(
+                title: "Shrink Selected Text (Cmd -)",
+                action: #selector(AscensionNSTextView.shrinkSelectedText(_:)),
+                keyEquivalent: ""
+            )
+            shrinkItem.target = view
+            sizeMenu.addItem(shrinkItem)
+
+            let resetItem = NSMenuItem(
+                title: "Reset Selected Size (Cmd 0)",
+                action: #selector(AscensionNSTextView.resetSelectedTextSize(_:)),
+                keyEquivalent: ""
+            )
+            resetItem.target = view
+            sizeMenu.addItem(resetItem)
+
+            let sizeParent = NSMenuItem(title: "Text Size", action: nil, keyEquivalent: "")
+            sizeParent.submenu = sizeMenu
+            enriched.insertItem(sizeParent, at: 0)
+
+            // Separate Folding submenu (Does NOT mix with + / -)
             let foldMenu = NSMenu(title: "Folding")
             let sel = view.selectedRange()
             if sel.length > 0 {
                 let foldItem = NSMenuItem(
-                    title: "Fold Selection (Shrink Block)",
+                    title: "Fold Selection (Cmd+Opt+[)",
                     action: #selector(AscensionNSTextView.foldSelectedBlock(_:)),
                     keyEquivalent: ""
                 )
@@ -213,7 +268,7 @@ struct UnifiedNoteTextView: NSViewRepresentable {
 
             if let marker = markerAt(index: charIndex, in: view.string) {
                 let unfoldItem = NSMenuItem(
-                    title: "Unfold Block (Expand)",
+                    title: "Unfold Block (Cmd+Opt+])",
                     action: #selector(AscensionNSTextView.unfoldHoveredBlock(_:)),
                     keyEquivalent: ""
                 )
@@ -232,26 +287,11 @@ struct UnifiedNoteTextView: NSViewRepresentable {
                 foldMenu.addItem(unfoldAll)
             }
 
-            foldMenu.addItem(.separator())
-            let expandText = NSMenuItem(
-                title: "Expand Text Size (Cmd +)",
-                action: #selector(AscensionNSTextView.expandTextSize(_:)),
-                keyEquivalent: ""
-            )
-            expandText.target = view
-            foldMenu.addItem(expandText)
-
-            let shrinkText = NSMenuItem(
-                title: "Shrink Text Size (Cmd -)",
-                action: #selector(AscensionNSTextView.shrinkTextSize(_:)),
-                keyEquivalent: ""
-            )
-            shrinkText.target = view
-            foldMenu.addItem(shrinkText)
-
-            let foldParent = NSMenuItem(title: "Folding & Size", action: nil, keyEquivalent: "")
-            foldParent.submenu = foldMenu
-            enriched.insertItem(foldParent, at: 0)
+            if !foldMenu.items.isEmpty {
+                let foldParent = NSMenuItem(title: "Folding", action: nil, keyEquivalent: "")
+                foldParent.submenu = foldMenu
+                enriched.insertItem(foldParent, at: 0)
+            }
 
             // Format submenu
             let fmtMenu = NSMenu(title: "Format")
@@ -292,17 +332,14 @@ struct UnifiedNoteTextView: NSViewRepresentable {
             return nil
         }
 
-        private func reapplyVisualLine1AndFolds(on tv: AscensionNSTextView) {
+        private func reapplyVisualLine1AndFoldsPreservingSpans(on tv: AscensionNSTextView) {
             guard let storage = tv.textStorage else { return }
             let ns = storage.string as NSString
             let len = ns.length
             guard len > 0 else { return }
 
-            let bodyFont = NSFont.systemFont(ofSize: store.editorFontSize)
-            let titleFont = NSFont.systemFont(ofSize: store.editorFontSize + 7.0, weight: .bold)
             let foldFont = NSFont.monospacedSystemFont(ofSize: max(11.0, store.editorFontSize - 1.5), weight: .semibold)
             let foldBg = NSColor.systemYellow.withAlphaComponent(0.22)
-
             let clampedRanges = tv.selectedRanges.compactMap { val -> NSValue? in
                 let r = val.rangeValue
                 let loc = min(max(0, r.location), len)
@@ -310,13 +347,19 @@ struct UnifiedNoteTextView: NSViewRepresentable {
                 return NSValue(range: NSRange(location: loc, length: min(r.length, maxLen)))
             }
 
-            storage.beginEditing()
-            storage.addAttribute(.font, value: bodyFont, range: NSRange(location: 0, length: len))
-            storage.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: len))
             let line1 = ns.lineRange(for: NSRange(location: 0, length: 0))
+            storage.beginEditing()
+            storage.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: len))
+
+            // Keep existing per-character font sizes, updating only Line 1 bold weight
             if line1.length > 0 {
-                storage.addAttribute(.font, value: titleFont, range: line1)
+                storage.enumerateAttribute(.font, in: line1) { val, subRange, _ in
+                    let currentSize = (val as? NSFont)?.pointSize ?? CGFloat(store.editorFontSize + 7.0)
+                    let targetSize = max(currentSize, CGFloat(store.editorFontSize + 7.0))
+                    storage.addAttribute(.font, value: NSFont.systemFont(ofSize: targetSize, weight: .bold), range: subRange)
+                }
             }
+
             if let markers = store.selectedNote?.foldedBlocks.keys {
                 for marker in markers {
                     var search = 0
@@ -357,22 +400,75 @@ final class AscensionNSTextView: NSTextView {
     @objc func prefixHeading(_ sender: Any?) { prefixSelectedLines(with: "## ") }
     @objc func prefixBullet(_ sender: Any?) { prefixSelectedLines(with: "• ") }
 
-    @objc func expandTextSize(_ sender: Any?) {
-        if let marker = markerInsideSelection() {
-            unfoldMarkerInPlace(marker)
-            return
-        }
-        coordinator?.store.expandEditorFontSize()
+    // MARK: - Selection-Only Font Grow / Shrink (Never mixes with Folding!)
+
+    @objc func growSelectedText(_ sender: Any?) {
+        adjustSelectedFontSize(delta: 2.0)
     }
 
-    @objc func shrinkTextSize(_ sender: Any?) {
+    @objc func shrinkSelectedText(_ sender: Any?) {
+        adjustSelectedFontSize(delta: -2.0)
+    }
+
+    @objc func resetSelectedTextSize(_ sender: Any?) {
+        guard let storage = textStorage else { return }
+        let defaultBody = CGFloat(coordinator?.store.editorFontSize ?? 15.0)
         let sel = selectedRange()
-        if sel.length > 0 {
-            foldRangeInPlace(sel)
+        let ns = storage.string as NSString
+        guard sel.location != NSNotFound, sel.location + sel.length <= ns.length else { return }
+        let targetRange = sel.length > 0 ? sel : NSRange(location: 0, length: ns.length)
+        let line1End = ns.lineRange(for: NSRange(location: 0, length: 0)).upperBound
+
+        storage.beginEditing()
+        if targetRange.length > 0 {
+            let line1Hit = NSIntersectionRange(targetRange, NSRange(location: 0, length: line1End))
+            if line1Hit.length > 0 {
+                storage.addAttribute(.font, value: NSFont.systemFont(ofSize: defaultBody + 7.0, weight: .bold), range: line1Hit)
+            }
+            let bodyStart = max(targetRange.location, line1End)
+            let bodyEnd = targetRange.location + targetRange.length
+            if bodyEnd > bodyStart {
+                storage.addAttribute(
+                    .font,
+                    value: NSFont.systemFont(ofSize: defaultBody),
+                    range: NSRange(location: bodyStart, length: bodyEnd - bodyStart)
+                )
+            }
+        }
+        storage.endEditing()
+        typingAttributes[.font] = NSFont.systemFont(ofSize: defaultBody)
+        coordinator?.persistCurrentSpans(from: self)
+    }
+
+    private func adjustSelectedFontSize(delta: CGFloat) {
+        guard let storage = textStorage else { return }
+        let sel = selectedRange()
+        let defaultBody = CGFloat(coordinator?.store.editorFontSize ?? 15.0)
+
+        if sel.length == 0 {
+            let current = (typingAttributes[.font] as? NSFont)?.pointSize ?? defaultBody
+            let nextSize = min(48.0, max(9.0, current + delta))
+            typingAttributes[.font] = NSFont.systemFont(ofSize: nextSize)
             return
         }
-        coordinator?.store.shrinkEditorFontSize()
+
+        let ns = storage.string as NSString
+        guard sel.location != NSNotFound, sel.location + sel.length <= ns.length else { return }
+        let line1End = ns.lineRange(for: NSRange(location: 0, length: 0)).upperBound
+
+        storage.beginEditing()
+        storage.enumerateAttribute(.font, in: sel) { val, subRange, _ in
+            let oldFont = (val as? NSFont) ?? NSFont.systemFont(ofSize: defaultBody)
+            let newSize = min(48.0, max(9.0, oldFont.pointSize + delta))
+            let weight: NSFont.Weight = (subRange.location < line1End) ? .bold : .regular
+            let newFont = NSFont.systemFont(ofSize: newSize, weight: weight)
+            storage.addAttribute(.font, value: newFont, range: subRange)
+        }
+        storage.endEditing()
+        coordinator?.persistCurrentSpans(from: self)
     }
+
+    // MARK: - Separate Folding Actions
 
     @objc func foldSelectedBlock(_ sender: Any?) {
         foldRangeInPlace(selectedRange())
@@ -381,6 +477,14 @@ final class AscensionNSTextView: NSTextView {
     @objc func unfoldHoveredBlock(_ sender: NSMenuItem) {
         if let marker = sender.representedObject as? String {
             unfoldMarkerInPlace(marker)
+        }
+    }
+
+    @objc func unfoldBlockAtCursor(_ sender: Any?) {
+        if let marker = markerInsideSelection() {
+            unfoldMarkerInPlace(marker)
+        } else {
+            unfoldAllBlocks(sender)
         }
     }
 

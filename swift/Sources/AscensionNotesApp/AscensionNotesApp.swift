@@ -47,7 +47,7 @@ struct AscensionNotesApp: App {
         WindowGroup("Ascension Notes") {
             AscensionNotesRootView(store: store)
                 #if os(macOS)
-                .frame(minWidth: 920, minHeight: 580)
+                .frame(minWidth: 940, minHeight: 600)
                 .onAppear {
                     let currentStore = store
                     appDelegate.onWillTerminate = { [weak currentStore] in
@@ -60,7 +60,7 @@ struct AscensionNotesApp: App {
                 #endif
         }
         #if os(macOS)
-        .defaultSize(width: 1120, height: 700)
+        .defaultSize(width: 1140, height: 720)
         #endif
         .commands {
             CommandGroup(replacing: .newItem) {
@@ -70,43 +70,49 @@ struct AscensionNotesApp: App {
                 .keyboardShortcut("n", modifiers: .command)
             }
             CommandGroup(after: .textFormatting) {
-                Button("Expand / Zoom In") {
+                Button("Grow Selected Text") {
                     #if os(macOS)
-                    if !NSApp.sendAction(#selector(AscensionNSTextView.expandTextSize(_:)), to: nil, from: nil) {
-                        store.expandEditorFontSize()
-                    }
-                    #else
-                    store.expandEditorFontSize()
+                    _ = NSApp.sendAction(#selector(AscensionNSTextView.growSelectedText(_:)), to: nil, from: nil)
                     #endif
                 }
                 .keyboardShortcut("+", modifiers: .command)
 
-                Button("Expand (=)") {
+                Button("Grow Selected Text (=)") {
                     #if os(macOS)
-                    if !NSApp.sendAction(#selector(AscensionNSTextView.expandTextSize(_:)), to: nil, from: nil) {
-                        store.expandEditorFontSize()
-                    }
-                    #else
-                    store.expandEditorFontSize()
+                    _ = NSApp.sendAction(#selector(AscensionNSTextView.growSelectedText(_:)), to: nil, from: nil)
                     #endif
                 }
                 .keyboardShortcut("=", modifiers: .command)
 
-                Button("Shrink / Fold Block") {
+                Button("Shrink Selected Text") {
                     #if os(macOS)
-                    if !NSApp.sendAction(#selector(AscensionNSTextView.shrinkTextSize(_:)), to: nil, from: nil) {
-                        store.shrinkEditorFontSize()
-                    }
-                    #else
-                    store.shrinkEditorFontSize()
+                    _ = NSApp.sendAction(#selector(AscensionNSTextView.shrinkSelectedText(_:)), to: nil, from: nil)
                     #endif
                 }
                 .keyboardShortcut("-", modifiers: .command)
 
-                Button("Reset Text Size") {
-                    store.resetEditorFontSize()
+                Button("Reset Selected Text Size") {
+                    #if os(macOS)
+                    _ = NSApp.sendAction(#selector(AscensionNSTextView.resetSelectedTextSize(_:)), to: nil, from: nil)
+                    #endif
                 }
                 .keyboardShortcut("0", modifiers: .command)
+
+                Divider()
+
+                Button("Fold Selected Block") {
+                    #if os(macOS)
+                    _ = NSApp.sendAction(#selector(AscensionNSTextView.foldSelectedBlock(_:)), to: nil, from: nil)
+                    #endif
+                }
+                .keyboardShortcut("[", modifiers: [.command, .option])
+
+                Button("Unfold Block / All") {
+                    #if os(macOS)
+                    _ = NSApp.sendAction(#selector(AscensionNSTextView.unfoldBlockAtCursor(_:)), to: nil, from: nil)
+                    #endif
+                }
+                .keyboardShortcut("]", modifiers: [.command, .option])
             }
             CommandGroup(replacing: .help) {
                 Button("Ascension Notes Help") {
@@ -133,6 +139,7 @@ struct AscensionNotesRootView: View {
     @Bindable var store: NotesStore
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var showCopiedToast: Bool = false
+    @State private var copiedClockToast: Bool = false
     @FocusState private var isFindFieldFocused: Bool
     @FocusState private var isInlineFindFocused: Bool
     @FocusState private var isTitleFocused: Bool
@@ -154,7 +161,7 @@ struct AscensionNotesRootView: View {
         .tint(notesGold)
         .inspector(isPresented: $store.showInspector) {
             axifInspectorDrawer
-                .inspectorColumnWidth(min: 270, ideal: 310, max: 380)
+                .inspectorColumnWidth(min: 280, ideal: 320, max: 390)
         }
         .sheet(isPresented: $store.showHelp) {
             NavigationStack {
@@ -169,39 +176,54 @@ struct AscensionNotesRootView: View {
         .onReceive(clockTimer) { _ in
             store.refreshClock()
         }
-        .onChange(of: store.sidebarFilter) { _, _ in
-            store.selectedNoteID = store.filteredNotes.first?.id
-        }
         .onChange(of: store.selectedNoteID) { _, _ in
             showCopiedToast = false
         }
     }
 
-    // MARK: - Column 1: Folders Sidebar (Apple Notes Style)
+    // MARK: - Column 1: Button-Driven Folders Sidebar (100% Clickable on macOS & iOS)
 
     private var foldersSidebar: some View {
-        List(selection: $store.sidebarFilter) {
+        List {
             Section("Library") {
-                sidebarRow(.all)
-                sidebarRow(.pinned)
+                sidebarButtonRow(.all)
+                sidebarButtonRow(.pinned)
             }
 
             Section("Folders") {
                 ForEach(NoteFolder.allCases) { folder in
-                    sidebarRow(.folder(folder))
+                    sidebarButtonRow(.folder(folder))
                 }
             }
 
             Section("Jesus Clock (Base-38)") {
-                HStack {
-                    Image(systemName: "clock")
-                        .foregroundStyle(notesGold)
-                    Text(store.liveClockText)
-                        .font(.system(.body, design: .monospaced).weight(.semibold))
-                    Spacer()
-                    Text("T0")
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Image(systemName: store.clockIsPaused ? "pause.circle.fill" : "clock")
+                            .foregroundStyle(store.clockIsPaused ? .orange : notesGold)
+                        Text(store.liveClockText)
+                            .font(.system(.body, design: .monospaced).weight(.semibold))
+                            .textSelection(.enabled)
+                        Spacer()
+                        Button {
+                            copyToClipboard(store.liveClockText)
+                            copiedClockToast = true
+                        } label: {
+                            Image(systemName: copiedClockToast ? "checkmark" : "doc.on.doc")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Copy Base-38 Jesus Clock")
+                    }
+                    if store.clockIsPaused {
+                        Text("Paused to skip 666 / filter (raw: \(store.rawClockText))")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text("Vault: \(store.unusedAcodeVault.count) unused Acode9 stored")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .padding(.vertical, 2)
             }
@@ -211,6 +233,7 @@ struct AscensionNotesRootView: View {
             ToolbarItem(placement: .automatic) {
                 Menu {
                     Toggle("Auto-Cap / Autocorrect", isOn: $store.autoCapitalizeNewLines)
+                    Toggle("URL-Safe (- and _)", isOn: $store.urlSafeDash)
                     Divider()
                     Button("Ascension Notes Help") {
                         #if os(macOS)
@@ -229,16 +252,29 @@ struct AscensionNotesRootView: View {
         }
     }
 
-    private func sidebarRow(_ filter: SidebarFilter) -> some View {
-        HStack {
-            Label(filter.title, systemImage: filter.systemImage)
-            Spacer()
-            Text("\(store.count(for: filter))")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
+    private func sidebarButtonRow(_ filter: SidebarFilter) -> some View {
+        let isSelected = (store.activeSidebarFilter == filter)
+        return Button {
+            store.selectSidebarFilter(filter)
+            copiedClockToast = false
+        } label: {
+            HStack {
+                Label(filter.title, systemImage: filter.systemImage)
+                    .foregroundStyle(isSelected ? notesGold : .primary)
+                    .fontWeight(isSelected ? .semibold : .regular)
+                Spacer()
+                Text("\(store.count(for: filter))")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(isSelected ? notesGold : .secondary)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isSelected ? notesGold.opacity(0.18) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
         }
-        .contentShape(Rectangle())
-        .tag(filter as SidebarFilter?)
+        .buttonStyle(.plain)
     }
 
     // MARK: - Column 2: Searchable Notes List
@@ -250,7 +286,7 @@ struct AscensionNotesRootView: View {
 
             if store.filteredNotes.isEmpty {
                 ContentUnavailableView(
-                    store.query.isEmpty ? "No Notes" : "No Matches",
+                    store.query.isEmpty ? "No Notes in \(store.activeSidebarFilter.title)" : "No Matches",
                     systemImage: store.query.isEmpty ? "note.text" : "magnifyingglass",
                     description: Text(
                         store.query.isEmpty
@@ -263,6 +299,7 @@ struct AscensionNotesRootView: View {
                 List(selection: $store.selectedNoteID) {
                     ForEach(store.filteredNotes) { note in
                         noteRowCard(note)
+                            .contentShape(Rectangle())
                             .tag(note.id as UUID?)
                             .contextMenu {
                                 Button {
@@ -290,7 +327,7 @@ struct AscensionNotesRootView: View {
                 #endif
             }
         }
-        .navigationTitle((store.sidebarFilter ?? .all).title)
+        .navigationTitle(store.activeSidebarFilter.title)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -435,9 +472,16 @@ struct AscensionNotesRootView: View {
                     Divider()
                 }
 
-                // Centered Apple Notes-style date banner
-                HStack {
+                // Centered Apple Notes-style date + folder badge
+                HStack(spacing: 8) {
                     Spacer()
+                    Text(note.folder.rawValue)
+                        .font(.caption2.weight(.medium))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(notesGold.opacity(0.15))
+                        .foregroundStyle(notesGold)
+                        .clipShape(Capsule())
                     Text(note.updatedAt.formatted(date: .long, time: .shortened))
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -452,9 +496,10 @@ struct AscensionNotesRootView: View {
                         store: store,
                         noteID: note.id,
                         text: note.rawText,
-                        fontSize: store.editorFontSize,
+                        defaultFontSize: store.editorFontSize,
                         autoCapitalizeNewLines: store.autoCapitalizeNewLines,
-                        foldedBlocks: note.foldedBlocks
+                        foldedBlocks: note.foldedBlocks,
+                        fontSpans: note.fontSpans
                     )
                     #else
                     let titleBinding = Binding(
@@ -531,19 +576,31 @@ struct AscensionNotesRootView: View {
                     }
                 }
 
-                // Bottom clickable AXIF bar so Ascenders can inspect AXIF data with 1 click
+                // Bottom selectable Jesus Clock & clickable View AXIF Data bar
                 Divider()
                 HStack(spacing: 10) {
                     Text(note.ownerAcode9)
                         .font(.caption.monospaced().weight(.semibold))
                         .foregroundStyle(notesGold)
+                        .textSelection(.enabled)
                     if let doc = note.compiledDocument(urlSafeDash: store.urlSafeDash) {
                         Text("• \(doc.axif.munscCount) AXIF token(s)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Text("• Clock \(doc.axif.jesusClock)")
-                            .font(.caption.monospaced())
+                    }
+                    HStack(spacing: 4) {
+                        Text("• Clock:")
+                            .font(.caption)
                             .foregroundStyle(.secondary)
+                        Text(store.liveClockText)
+                            .font(.caption.monospaced().weight(.medium))
+                            .foregroundStyle(store.clockIsPaused ? .orange : .primary)
+                            .textSelection(.enabled)
+                        if store.clockIsPaused {
+                            Text("(PAUSED)")
+                                .font(.caption2.bold())
+                                .foregroundStyle(.orange)
+                        }
                     }
                     Spacer()
                     Button {
@@ -826,9 +883,9 @@ struct AscensionNotesRootView: View {
                         .font(.system(.body, design: .monospaced))
                         .textFieldStyle(.roundedBorder)
 
-                        Toggle("-", isOn: $store.urlSafeDash)
+                        Toggle("-/_", isOn: $store.urlSafeDash)
                             .toggleStyle(.button)
-                            .help("Toggle Caret ^ / Dash - URL-safe mode")
+                            .help("Use URL-safe '-' (for ^) and '_' (for |)")
                     }
 
                     let validation = Acode9.validate(note.ownerAcode9, strict: true, allowDash: true)
@@ -843,7 +900,13 @@ struct AscensionNotesRootView: View {
                 if let doc = store.selectedDocument {
                     Section("AXIF Metadata Layer") {
                         LabeledContent("Version", value: doc.axif.version)
-                        LabeledContent("Jesus Clock", value: doc.axif.jesusClock)
+                        HStack {
+                            Text("Jesus Clock")
+                            Spacer()
+                            Text(store.liveClockText)
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                        }
                         LabeledContent("Hidden MUNSCs", value: "\(doc.axif.munscCount)")
 
                         Button {
@@ -887,20 +950,27 @@ struct AscensionNotesRootView: View {
                     }
                 }
 
-                Section("1s Cadence Acode9 Pool") {
-                    Button("Mint Fresh Batch") {
-                        store.generateNextPool()
+                Section("Stored Unused Acodes Vault (\(store.unusedAcodeVault.count))") {
+                    HStack {
+                        Button("Harvest +12") {
+                            store.harvestUnusedAcodes(count: 12)
+                        }
+                        Spacer()
+                        Button("Claim & Assign") {
+                            let code = store.claimUnusedAcode()
+                            store.updateSelectedOwnerAcode9(code)
+                        }
+                        .buttonStyle(.borderedProminent)
                     }
-                    ForEach(store.rollingPool) { entry in
+                    ForEach(store.unusedAcodeVault.prefix(6)) { entry in
                         HStack {
                             Text(entry.acode9)
                                 .font(.caption.monospaced())
+                                .textSelection(.enabled)
                             Spacer()
-                            Button("Assign") {
-                                store.updateSelectedOwnerAcode9(entry.acode9)
-                            }
-                            .font(.caption2)
-                            .buttonStyle(.bordered)
+                            Text(entry.jesusClock)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }

@@ -134,6 +134,7 @@ public enum Acode9: Sendable {
     private static let alnumSet: Set<Character> = Set(alnumChars)
 
     public static let defaultBlockedSubstrings: [String] = [
+        "666",
         "anal", "anus", "arse", "bitch", "btch", "cock", "c0ck", "cunt",
         "damn", "dick", "d1ck", "dyke", "fag", "fck", "fuk", "fuck",
         "hell", "jizz", "kike", "klan", "nazi", "nig", "n1g", "porn",
@@ -146,23 +147,24 @@ public enum Acode9: Sendable {
     ]
 
     public static func leadLetter(for clockChar: Character) throws -> Character {
-        guard Base38Clock.contains(clockChar) else {
+        let canonicalChar: Character = (clockChar == "_") ? "|" : ((clockChar == "-") ? "^" : clockChar)
+        guard Base38Clock.contains(canonicalChar) else {
             throw Acode9Error.invalidClockCharacter(clockChar)
         }
-        if clockChar >= "1" && clockChar <= "9", let ascii = clockChar.asciiValue {
+        if canonicalChar >= "1" && canonicalChar <= "9", let ascii = canonicalChar.asciiValue {
             let offset = ascii - Character("1").asciiValue!
             return Character(UnicodeScalar(Character("a").asciiValue! + offset))
         }
-        if clockChar == "0" {
+        if canonicalChar == "0" {
             return "z"
         }
-        if clockChar >= "a" && clockChar <= "z" {
-            return clockChar
+        if canonicalChar >= "a" && canonicalChar <= "z" {
+            return canonicalChar
         }
-        if clockChar == "|" {
+        if canonicalChar == "|" {
             return "x"
         }
-        if clockChar == "^" {
+        if canonicalChar == "^" {
             return "y"
         }
         throw Acode9Error.invalidClockCharacter(clockChar)
@@ -174,7 +176,9 @@ public enum Acode9: Sendable {
         guard chars[4] == centerCaret || chars[4] == centerDash else {
             throw Acode9Error.invalidCenter(chars[4])
         }
-        return String(chars[0..<4]) + String(centerDash) + String(chars[5..<9])
+        let left = Base38Clock.toURLSafe(String(chars[0..<4]))
+        let right = Base38Clock.toURLSafe(String(chars[5..<9]))
+        return left + String(centerDash) + right
     }
 
     public static func toCaret(_ code: String) throws -> String {
@@ -183,7 +187,9 @@ public enum Acode9: Sendable {
         guard chars[4] == centerCaret || chars[4] == centerDash else {
             throw Acode9Error.invalidCenter(chars[4])
         }
-        return String(chars[0..<4]) + String(centerCaret) + String(chars[5..<9])
+        let left = Base38Clock.fromURLSafe(String(chars[0..<4]))
+        let right = Base38Clock.fromURLSafe(String(chars[5..<9]))
+        return left + String(centerCaret) + right
     }
 
     public static func isGood1aTail(_ tail4: String) -> Bool {
@@ -196,18 +202,21 @@ public enum Acode9: Sendable {
     }
 
     public static func parse(_ code: String, allowDash: Bool = true) throws -> Acode9Parts {
-        let chars = Array(code)
-        guard chars.count == 9 else {
-            throw Acode9Error.invalidLength(chars.count)
+        let rawChars = Array(code)
+        guard rawChars.count == 9 else {
+            throw Acode9Error.invalidLength(rawChars.count)
         }
-        guard chars[0] == bigA else {
-            throw Acode9Error.invalidBigA(chars[0])
+        guard rawChars[0] == bigA else {
+            throw Acode9Error.invalidBigA(rawChars[0])
         }
-        let center = chars[4]
+        let center = rawChars[4]
         let validCenter = allowDash ? (center == centerCaret || center == centerDash) : (center == centerCaret)
         guard validCenter else {
             throw Acode9Error.invalidCenter(center)
         }
+
+        let normalized = allowDash ? try toCaret(code) : code
+        let chars = Array(normalized)
 
         let clock2Chars = [chars[2], chars[3]]
         for ch in clock2Chars {
@@ -235,7 +244,7 @@ public enum Acode9: Sendable {
         let clock2 = String(clock2Chars)
         let tail4 = String(tailChars)
         let canonical = "\(bigA)\(chars[1])\(clock2)\(centerCaret)\(tail4)"
-        let urlSafe = "\(bigA)\(chars[1])\(clock2)\(centerDash)\(tail4)"
+        let urlSafe = try toDash(canonical)
 
         return Acode9Parts(
             raw: code,
@@ -291,10 +300,13 @@ public enum Acode9: Sendable {
         let blocked = (blockedSubstrings ?? defaultBlockedSubstrings).map { $0.lowercased() }.filter { !$0.isEmpty }
         let tailLower = tail4.lowercased()
         let coreLower = core.lowercased()
+        if tailLower.contains("666") || coreLower.contains("666") {
+            reasons.append("blocked_substring:666")
+        }
         let tailLeet = String(tailLower.map { leetMap[$0] ?? $0 })
         let coreLeet = String(coreLower.map { leetMap[$0] ?? $0 })
 
-        for bad in blocked {
+        for bad in blocked where bad != "666" {
             if tailLower.contains(bad) || coreLower.contains(bad) || tailLeet.contains(bad) || coreLeet.contains(bad) {
                 reasons.append("blocked_substring:\(bad)")
                 break
@@ -399,10 +411,10 @@ public enum Acode9: Sendable {
     ) throws -> String {
         let c2 = Base38Clock.clock2(unixSeconds: unixSeconds)
         let lead = try leadLetter(for: c2.first!)
-        let center = urlSafe ? centerDash : centerCaret
 
         if let fixedTail = tail4 {
-            let candidate = "\(bigA)\(lead)\(c2)\(center)\(fixedTail)"
+            let rawCandidate = "\(bigA)\(lead)\(c2)\(centerCaret)\(fixedTail)"
+            let candidate = urlSafe ? try toDash(rawCandidate) : rawCandidate
             let res = validate(
                 candidate,
                 strict: mode.isStrict,
@@ -422,7 +434,8 @@ public enum Acode9: Sendable {
 
         for _ in 0..<maxAttempts {
             let sampled = randomTail4(mode: mode)
-            let candidate = "\(bigA)\(lead)\(c2)\(center)\(sampled)"
+            let rawCandidate = "\(bigA)\(lead)\(c2)\(centerCaret)\(sampled)"
+            let candidate = urlSafe ? try toDash(rawCandidate) : rawCandidate
             let res = validate(
                 candidate,
                 strict: mode.isStrict,
@@ -481,11 +494,12 @@ public enum Acode9: Sendable {
                 seen.insert(caret)
                 seen.insert(dash)
             }
+            let clockReading = Base38Clock.safeJesusClock(unixSeconds: ts, minWidth: 2, urlSafe: urlSafe)
             entries.append(
                 Acode9PoolEntry(
                     acode9: code,
                     timestamp: ts,
-                    jesusClock: Base38Clock.jesusClock(unixSeconds: ts, minWidth: 2),
+                    jesusClock: clockReading.clock,
                     mode: mode
                 )
             )

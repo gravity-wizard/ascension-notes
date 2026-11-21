@@ -25,15 +25,19 @@ from ascension import (
     decode_base38,
     decode_jesus_clock,
     encode_base38,
+    from_url_safe_base38,
     generate_acode9,
     generate_rolling_pool,
+    is_clean_clock,
     is_clean_id,
     jesus_clock,
     jesus_clock_to_datetime,
     lead_letter_for_clock_char,
     parse_acode9,
+    safe_jesus_clock,
     to_caret,
     to_dash,
+    to_url_safe_base38,
     validate_acode9,
 )
 
@@ -51,6 +55,28 @@ class Base38AndJesusClockTests(unittest.TestCase):
         for val in (0, 1, 37, 38, 1443, 210661380, 999999999):
             enc = encode_base38(val)
             self.assertEqual(decode_base38(enc), val)
+
+    def test_url_safe_dash_and_underscore(self) -> None:
+        raw = "2p|^6a"
+        safe = to_url_safe_base38(raw)
+        self.assertEqual(safe, "2p_-6a")
+        self.assertEqual(from_url_safe_base38(safe), raw)
+        self.assertEqual(decode_base38(safe), decode_base38(raw))
+        self.assertEqual(to_dash("Ab2p^|a^z"), "Ab2p-_a-z")
+        self.assertEqual(to_caret("Ab2p-_a-z"), "Ab2p^|a^z")
+
+    def test_safe_jesus_clock_pauses_on_666_and_bad_words(self) -> None:
+        ts_666 = decode_jesus_clock("2666ab")
+        reading = safe_jesus_clock(ts_666)
+        self.assertTrue(reading.is_paused)
+        self.assertEqual(reading.raw_clock, "2666ab")
+        self.assertEqual(reading.clock, "2665^^")
+        self.assertTrue(is_clean_clock(reading.clock))
+
+        ts_bad = decode_jesus_clock("2shit1")
+        bad_reading = safe_jesus_clock(ts_bad)
+        self.assertTrue(bad_reading.is_paused)
+        self.assertTrue(is_clean_clock(bad_reading.clock))
 
     def test_jesus_clock_2026_11_20_2p15ek(self) -> None:
         # 1584540571 + decode("2p15ek") == 2026-11-20T19:12:31Z
