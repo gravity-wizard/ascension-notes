@@ -771,6 +771,32 @@ final class NotesStore {
         return try? doc.exportSlogBogBBCode()
     }
 
+    func exportMarkdown(
+        for note: StoredNote? = nil,
+        includeFrontmatter: Bool = true,
+        includeAXIFFooter: Bool = true,
+        useRawText: Bool = false
+    ) -> String? {
+        let target = note ?? selectedNote
+        guard let target else { return nil }
+        guard let doc = target.compiledDocument(urlSafeDash: urlSafeDash, rules: customRules) else {
+            return nil
+        }
+        var text = (try? doc.exportMarkdown(
+            title: target.displayTitle,
+            includeFrontmatter: includeFrontmatter,
+            includeAXIFFooter: includeAXIFFooter,
+            useRawText: useRawText
+        )) ?? (useRawText ? target.rawText : target.derivedBody)
+
+        for att in target.attachments {
+            let marker = att.markerText
+            let mdImage = "![\(att.filename)](\(att.relativePath))"
+            text = text.replacingOccurrences(of: marker, with: mdImage)
+        }
+        return text
+    }
+
     @discardableResult
     func importSharedAXIF(_ payload: String, folder: NoteFolder = .quickNotes) throws -> AXIFImportResult {
         let bundle = try AXIFDocument.parseSharedBundle(payload)

@@ -607,6 +607,41 @@ public struct AXIFDocument: Sendable, Identifiable {
         """
     }
 
+    public func exportMarkdown(
+        title: String? = nil,
+        includeFrontmatter: Bool = true,
+        includeAXIFFooter: Bool = true,
+        useRawText: Bool = false
+    ) throws -> String {
+        let body = useRawText ? rawText : normalizedText
+        var parts: [String] = []
+
+        if includeFrontmatter {
+            let noteTitle = (title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let safeTitle = noteTitle.isEmpty ? "Ascension Note" : noteTitle
+            let escapedTitle = safeTitle.replacingOccurrences(of: "\"", with: "\\\"")
+            parts.append("""
+            ---
+            title: "\(escapedTitle)"
+            acode9: "\(ownerAcode9)"
+            jesus_clock: "\(axif.jesusClock)"
+            munsc_count: \(axif.munscCount)
+            axif_version: "\(axif.version)"
+            ---
+            """)
+        }
+
+        parts.append(body)
+
+        if includeAXIFFooter {
+            let compactJSON = try axif.toJSON(prettyPrinted: false)
+            let payload = Data(compactJSON.utf8).base64EncodedString()
+            parts.append("<!-- AXIF: \(ownerAcode9) | Clock: \(axif.jesusClock) | Payload: \(payload) -->")
+        }
+
+        return parts.joined(separator: "\n\n")
+    }
+
     public static func reconstructRawText(fromNormalized normalizedText: String, entries: [AXIFEntry]) -> String {
         guard !entries.isEmpty else { return normalizedText }
         var result = normalizedText

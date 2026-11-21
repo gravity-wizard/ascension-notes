@@ -421,6 +421,44 @@ class AscensionNote:
             "[/code][/spoiler]"
         )
 
+    def export_markdown(
+        self,
+        *,
+        include_frontmatter: bool = True,
+        include_axif_footer: bool = True,
+        use_raw_text: bool = False,
+    ) -> str:
+        body = self.raw_text if use_raw_text else self.normalized_text
+        parts: list[str] = []
+
+        if include_frontmatter:
+            safe_title = (self.title or "Ascension Note").strip().replace('"', '\\"')
+            parts.append(
+                f"---\n"
+                f'title: "{safe_title}"\n'
+                f'acode9: "{self.owner_acode9}"\n'
+                f'jesus_clock: "{self.axif.jesus_clock}"\n'
+                f"munsc_count: {self.axif.munsc_count}\n"
+                f'axif_version: "{self.axif.version}"\n'
+                f"---"
+            )
+
+        for att in self.attachments:
+            marker = att.marker_text
+            md_image = f"![{att.filename}]({att.relative_path})"
+            body = body.replace(marker, md_image)
+
+        parts.append(body)
+
+        if include_axif_footer:
+            compact_json = self.axif.to_json(indent=None)
+            payload = base64.b64encode(compact_json.encode("utf-8")).decode("ascii")
+            parts.append(
+                f"<!-- AXIF: {self.owner_acode9} | Clock: {self.axif.jesus_clock} | Payload: {payload} -->"
+            )
+
+        return "\n\n".join(parts)
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AscensionNote:
         axif_data = data["axif"]

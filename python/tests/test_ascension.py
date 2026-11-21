@@ -454,6 +454,35 @@ class SkipVowelsAndAttachmentTests(unittest.TestCase):
         self.assertEqual(swift_att.pixel_height, 1440)
         self.assertEqual(swift_att.short_id, "dead")
 
+    def test_export_markdown_with_frontmatter_and_attachments(self) -> None:
+        att = NoteAttachment(
+            id="B1C2D3E4-0000-0000-0000-000000000002",
+            filename="TestChart.png",
+            relative_path="attachments/TestChart.png",
+            pixel_width=1200,
+            pixel_height=800,
+            created_at="2026-11-21T06:00:00Z",
+        )
+        note = AscensionNote.create(
+            f"Here is NormA meeting at SLC:\n{att.marker_text}",
+            owner_acode9="Ab2p^a40z",
+            title="Meeting with NormA",
+            attachments=[att],
+        )
+
+        md = note.export_markdown(include_frontmatter=True, include_axif_footer=True)
+        self.assertIn('title: "Meeting with NormA"', md)
+        self.assertIn('acode9: "Ab2p^a40z"', md)
+        self.assertIn("![TestChart.png](attachments/TestChart.png)", md)
+        self.assertIn("Norma meeting at SLC", md)
+        self.assertIn("<!-- AXIF: Ab2p^a40z | Clock:", md)
+
+        # Raw text mode
+        md_raw = note.export_markdown(include_frontmatter=False, include_axif_footer=False, use_raw_text=True)
+        self.assertIn("NormA meeting at SLC", md_raw)
+        self.assertNotIn("---", md_raw)
+        self.assertNotIn("<!-- AXIF:", md_raw)
+
 
 if __name__ == "__main__":
     unittest.main()

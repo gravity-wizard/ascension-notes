@@ -55,6 +55,17 @@ struct HelpGuideView: View {
                 )
 
                 helpSection(
+                    icon: "arrow.down.doc",
+                    title: "Export Note as Markdown (.md) & Share",
+                    bullets: [
+                        "Export Note as Markdown (Cmd + Shift + E): Opens native macOS Save Panel to export clean Markdown (.md) with YAML frontmatter (title, Acode9, Jesus Clock) and AXIF sidecar comment.",
+                        "Copy Note as Markdown (Cmd + Option + C): Copies full Markdown payload directly to your clipboard.",
+                        "Attachments are automatically formatted into standard Markdown image tags (![filename](relativePath)).",
+                        "Save (Cmd + S): Flushes active note cleanly to disk (no unhandled alert beeps)."
+                    ]
+                )
+
+                helpSection(
                     icon: "folder.badge.gearshape",
                     title: "Where Help Text Lives During Development",
                     bullets: [

@@ -36,6 +36,46 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         onWillTerminate?()
     }
 }
+
+@MainActor
+func exportSelectedNoteAsMarkdownFile(store: NotesStore) {
+    guard let note = store.selectedNote,
+          let markdown = store.exportMarkdown(for: note) else {
+        NSSound.beep()
+        return
+    }
+
+    let savePanel = NSSavePanel()
+    savePanel.title = "Export Note as Markdown"
+    savePanel.prompt = "Export"
+    if let mdType = UTType(filenameExtension: "md") {
+        savePanel.allowedContentTypes = [mdType, .plainText]
+    } else {
+        savePanel.allowedContentTypes = [.plainText]
+    }
+    savePanel.canCreateDirectories = true
+    savePanel.isExtensionHidden = false
+
+    let candidateTitle = note.displayTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+    let sanitized = candidateTitle
+        .replacingOccurrences(of: "/", with: "-")
+        .replacingOccurrences(of: ":", with: "-")
+        .replacingOccurrences(of: "\\", with: "-")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+
+    let baseName = sanitized.isEmpty ? note.ownerAcode9 : "\(sanitized)"
+    savePanel.nameFieldStringValue = "\(baseName).md"
+
+    savePanel.begin { response in
+        if response == .OK, let url = savePanel.url {
+            do {
+                try markdown.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                print("Failed to save markdown file: \(error)")
+            }
+        }
+    }
+}
 #endif
 
 @main
@@ -71,6 +111,32 @@ struct AscensionNotesApp: App {
                     store.createNewNote()
                 }
                 .keyboardShortcut("n", modifiers: .command)
+            }
+            CommandGroup(replacing: .saveItem) {
+                Button("Save") {
+                    store.save()
+                }
+                .keyboardShortcut("s", modifiers: .command)
+            }
+            CommandGroup(after: .importExport) {
+                Button("Export Note as Markdown...") {
+                    #if os(macOS)
+                    exportSelectedNoteAsMarkdownFile(store: store)
+                    #endif
+                }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+                .disabled(store.selectedNote == nil)
+
+                Button("Copy Note as Markdown") {
+                    if let note = store.selectedNote, let md = store.exportMarkdown(for: note) {
+                        #if os(macOS)
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(md, forType: .string)
+                        #endif
+                    }
+                }
+                .keyboardShortcut("c", modifiers: [.command, .option])
+                .disabled(store.selectedNote == nil)
             }
             CommandGroup(after: .textFormatting) {
                 Button("Grow Selected Text") {
@@ -772,6 +838,49 @@ struct AscensionNotesRootView: View {
                     }
                     .help("Open 4-Tier A3odex Codex & \"Where's Norma?\" Aa Demo")
 
+                    Menu {
+                        Button {
+                            #if os(macOS)
+                            exportSelectedNoteAsMarkdownFile(store: store)
+                            #endif
+                        } label: {
+                            Label("Export Note as Markdown (.md)...", systemImage: "arrow.down.doc")
+                        }
+
+                        Button {
+                            if let md = store.exportMarkdown(for: note) {
+                                copyToClipboard(md)
+                                copiedFeedbackLabel = "Copied Note as Markdown!"
+                            }
+                        } label: {
+                            Label("Copy Note as Markdown", systemImage: "doc.on.doc")
+                        }
+
+                        Divider()
+
+                        Button {
+                            if let footerText = store.exportCleanWithAXIFFooter(for: note) {
+                                copyToClipboard(footerText)
+                                copiedFeedbackLabel = "Copied Clean + AXIF Footer!"
+                            }
+                        } label: {
+                            Label("Copy Clean + AXIF Footer", systemImage: "doc.text.fill")
+                        }
+
+                        Button {
+                            if let bbcode = store.exportSlogBogBBCode(for: note) {
+                                copyToClipboard(bbcode)
+                                copiedFeedbackLabel = "Copied SlogBog phpBBog Post!"
+                            }
+                        } label: {
+                            Label("Copy SlogBog phpBBog Post", systemImage: "quote.bubble")
+                        }
+                    } label: {
+                        Label("Export", systemImage: "square.and.arrow.up")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .help("Export Note as Markdown (.md) or Copy Shareable Formats (Cmd+Shift+E)")
+
                     Button {
                         store.showInspector.toggle()
                     } label: {
@@ -1170,6 +1279,23 @@ struct AscensionNotesRootView: View {
                                 .textSelection(.enabled)
                         }
                         LabeledContent("Hidden MUNSCs", value: "\(doc.axif.munscCount)")
+
+                        Button {
+                            #if os(macOS)
+                            exportSelectedNoteAsMarkdownFile(store: store)
+                            #endif
+                        } label: {
+                            Label("Export Note as Markdown...", systemImage: "arrow.down.doc")
+                        }
+
+                        Button {
+                            if let md = store.exportMarkdown(for: note) {
+                                copyToClipboard(md)
+                                copiedFeedbackLabel = "Copied Note as Markdown!"
+                            }
+                        } label: {
+                            Label("Copy Note as Markdown", systemImage: "doc.on.doc")
+                        }
 
                         Button {
                             if let footerText = store.exportCleanWithAXIFFooter(for: note) {
