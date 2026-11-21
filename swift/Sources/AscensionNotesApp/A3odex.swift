@@ -150,7 +150,8 @@ public enum A3odexCatalog: Sendable {
         A3odexEntry(token: "S1tsUW8", canonical: "SitsUW8", tier: .svnuncs, meaning: "Sits-You-Weigh-Station MUNSC token (7-char SvnUNC)."),
         A3odexEntry(token: "WhrNrmA", canonical: "Where's Norma A", tier: .svnuncs, meaning: "Skip-vowels 7-char SvnUNC for Where's Norma? Book A."),
         A3odexEntry(token: "WhrNrmB", canonical: "Where's Norma B", tier: .svnuncs, meaning: "Skip-vowels 7-char SvnUNC for Where's Norma? Book B."),
-        A3odexEntry(token: "Things5", canonical: "Things5", tier: .svnuncs, meaning: "Anecdotal collection token (ST57range Things5) in L1 story store.")
+        A3odexEntry(token: "Things5", canonical: "Things5", tier: .svnuncs, meaning: "Anecdotal collection token (ST57range Things5) in L1 story store."),
+        A3odexEntry(token: "hv2p2gn", canonical: "hv2p2gn", tier: .svnuncs, meaning: "32GB Green microSD card archive brain-bucket (renamed from 2p2fnv; HV2p2red for Mr. MacBook).")
     ]
 
     public static func decodeJSON(_ data: Data) throws -> [A3odexEntry] {
