@@ -244,20 +244,22 @@ struct UnifiedNoteTextView: NSViewRepresentable {
                 guard let self, let tv = self.textView else { return false }
                 switch action {
                 case .replaceRange(let location, let length, let replacement, let learnWord):
+                    tv.window?.makeFirstResponder(tv)
                     let ns = tv.string as NSString
                     guard location >= 0, length >= 0, location + length <= ns.length else {
                         return false
                     }
                     let range = NSRange(location: location, length: length)
-                    guard tv.shouldChangeText(in: range, replacementString: replacement) else {
-                        return false
+                    if tv.shouldChangeText(in: range, replacementString: replacement) {
+                        tv.replaceCharacters(in: range, with: replacement)
+                        tv.didChangeText()
+                    } else {
+                        tv.insertText(replacement, replacementRange: range)
                     }
-                    tv.replaceCharacters(in: range, with: replacement)
                     let newLen = (replacement as NSString).length
                     if let learnWord, !learnWord.isEmpty {
                         NSSpellChecker.shared.learnWord(learnWord)
                     }
-                    tv.didChangeText()
                     let newRange = NSRange(location: location, length: newLen)
                     tv.layoutManager?.removeTemporaryAttribute(.spellingState, forCharacterRange: newRange)
                     let cursorPos = min(location + newLen, (tv.string as NSString).length)
@@ -275,14 +277,18 @@ struct UnifiedNoteTextView: NSViewRepresentable {
                     return true
 
                 case .insertText(let snippet):
+                    tv.window?.makeFirstResponder(tv)
                     let sel = tv.selectedRange()
                     let currentNS = tv.string as NSString
                     let safeLoc = sel.location == NSNotFound ? currentNS.length : min(sel.location, currentNS.length)
                     let safeLen = sel.location == NSNotFound ? 0 : min(sel.length, currentNS.length - safeLoc)
                     let targetRange = NSRange(location: safeLoc, length: safeLen)
-                    guard tv.shouldChangeText(in: targetRange, replacementString: snippet) else { return false }
-                    tv.replaceCharacters(in: targetRange, with: snippet)
-                    tv.didChangeText()
+                    if tv.shouldChangeText(in: targetRange, replacementString: snippet) {
+                        tv.replaceCharacters(in: targetRange, with: snippet)
+                        tv.didChangeText()
+                    } else {
+                        tv.insertText(snippet, replacementRange: targetRange)
+                    }
                     self.store.recordEmojiInsertion(location: safeLoc, emoji: snippet)
                     let newPos = safeLoc + (snippet as NSString).length
                     tv.setSelectedRange(NSRange(location: newPos, length: 0))

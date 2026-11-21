@@ -304,7 +304,7 @@ final class NotesStore {
 
     var lastEmojiInsertionRecord: EmojiInsertionRecord? = nil
 
-    static let starterRecentEmojis: [String] = ["🔻🔻", "🐇", "😎", "🐸", "🐬", "🗝️", "🪿", "🆒"]
+    static let starterRecentEmojis: [String] = ["🔻🔻", "🐇", "🪿", "😎", "🐸", "🐬", "🗝️", "🆒"]
     var recentEmojis: [String] = starterRecentEmojis
     var recentEmojiCycleIndex: Int = 0
 
@@ -370,6 +370,9 @@ final class NotesStore {
     }
 
     func repeatLastEmoji() {
+        if viewMode != .edit {
+            viewMode = .edit
+        }
         let snippet = lastInsertedEmoji.isEmpty ? "🔻🔻" : lastInsertedEmoji
         if let handler = activeTextViewActionHandler, handler(.insertText(snippet)) {
             return
@@ -381,16 +384,19 @@ final class NotesStore {
     }
 
     func cycleRecentEmoji() {
+        if viewMode != .edit {
+            viewMode = .edit
+        }
         guard !recentEmojis.isEmpty else { return }
         recentEmojiCycleIndex = (recentEmojiCycleIndex + 1) % recentEmojis.count
         let nextEmoji = recentEmojis[recentEmojiCycleIndex]
         let oldEmoji = lastInsertedEmoji
         lastInsertedEmoji = nextEmoji
 
-        // If user just inserted an emoji within 4 seconds in the active note, swap it in place
+        // If user just inserted an emoji within 5 seconds in the active note, swap it in place
         if let rec = lastEmojiInsertionRecord,
            rec.noteID == selectedNoteID,
-           Date().timeIntervalSince(rec.timestamp) < 4.0,
+           Date().timeIntervalSince(rec.timestamp) < 5.0,
            rec.emoji == oldEmoji {
             let oldLen = (oldEmoji as NSString).length
             if let handler = activeTextViewActionHandler,
