@@ -30,7 +30,6 @@ struct UnifiedNoteTextView: NSViewRepresentable {
         scrollView.contentInsets = NSEdgeInsets(top: 6, left: 0, bottom: 360, right: 0)
 
         let textView = AscensionNSTextView()
-        textView.delegate = context.coordinator
         textView.coordinator = context.coordinator
         textView.isEditable = true
         textView.isSelectable = true
@@ -166,7 +165,7 @@ struct UnifiedNoteTextView: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, NSTextViewDelegate {
+    final class Coordinator: NSObject {
         var store: NotesStore
         weak var textView: AscensionNSTextView?
         var lastNoteID: UUID?
@@ -178,20 +177,17 @@ struct UnifiedNoteTextView: NSViewRepresentable {
             self.store = store
         }
 
-        nonisolated func textDidChange(_ notification: Notification) {
-            MainActor.assumeIsolated {
-                guard let tv = notification.object as? AscensionNSTextView else { return }
-                // Wait until IME / inline predictive autocomplete settles before touching store or attributes
-                if tv.hasMarkedText() {
-                    return
-                }
-                let updated = tv.string
-                if updated != lastSyncedText {
-                    lastSyncedText = updated
-                    store.updateSelectedFullText(updated)
-                }
-                reapplyVisualLine1AndFolds(on: tv)
+        func handleTextDidChange(on tv: AscensionNSTextView) {
+            // Wait until IME / inline predictive autocomplete settles before touching store or attributes
+            if tv.hasMarkedText() {
+                return
             }
+            let updated = tv.string
+            if updated != lastSyncedText {
+                lastSyncedText = updated
+                store.updateSelectedFullText(updated)
+            }
+            reapplyVisualLine1AndFolds(on: tv)
         }
 
         func enrichContextMenu(
@@ -321,6 +317,11 @@ struct UnifiedNoteTextView: NSViewRepresentable {
 final class AscensionNSTextView: NSTextView {
     weak var coordinator: UnifiedNoteTextView.Coordinator?
 
+    override func didChangeText() {
+        super.didChangeText()
+        coordinator?.handleTextDidChange(on: self)
+    }
+
     override func menu(for event: NSEvent) -> NSMenu? {
         let baseMenu = super.menu(for: event) ?? NSMenu()
         let pt = convert(event.locationInWindow, from: nil)
@@ -335,49 +336,39 @@ final class AscensionNSTextView: NSTextView {
     @objc func prefixBullet(_ sender: Any?) { prefixSelectedLines(with: "• ") }
 
     @objc func expandTextSize(_ sender: Any?) {
-        MainActor.assumeIsolated {
-            if let marker = markerInsideSelection(), let updated = coordinator?.store.unfoldMarker(marker) {
-                replaceEntireTextSafely(updated)
-                return
-            }
-            coordinator?.store.expandEditorFontSize()
+        if let marker = markerInsideSelection(), let updated = coordinator?.store.unfoldMarker(marker) {
+            replaceEntireTextSafely(updated)
+            return
         }
+        coordinator?.store.expandEditorFontSize()
     }
 
     @objc func shrinkTextSize(_ sender: Any?) {
-        MainActor.assumeIsolated {
-            let sel = selectedRange()
-            if sel.length > 0, let updated = coordinator?.store.foldBlock(rangeInRaw: sel) {
-                replaceEntireTextSafely(updated)
-                return
-            }
-            coordinator?.store.shrinkEditorFontSize()
+        let sel = selectedRange()
+        if sel.length > 0, let updated = coordinator?.store.foldBlock(rangeInRaw: sel) {
+            replaceEntireTextSafely(updated)
+            return
         }
+        coordinator?.store.shrinkEditorFontSize()
     }
 
     @objc func foldSelectedBlock(_ sender: Any?) {
-        MainActor.assumeIsolated {
-            let sel = selectedRange()
-            if let updated = coordinator?.store.foldBlock(rangeInRaw: sel) {
-                replaceEntireTextSafely(updated)
-            }
+        let sel = selectedRange()
+        if let updated = coordinator?.store.foldBlock(rangeInRaw: sel) {
+            replaceEntireTextSafely(updated)
         }
     }
 
     @objc func unfoldHoveredBlock(_ sender: NSMenuItem) {
-        MainActor.assumeIsolated {
-            if let marker = sender.representedObject as? String,
-               let updated = coordinator?.store.unfoldMarker(marker) {
-                replaceEntireTextSafely(updated)
-            }
+        if let marker = sender.representedObject as? String,
+           let updated = coordinator?.store.unfoldMarker(marker) {
+            replaceEntireTextSafely(updated)
         }
     }
 
     @objc func unfoldAllBlocks(_ sender: Any?) {
-        MainActor.assumeIsolated {
-            if let updated = coordinator?.store.unfoldAllBlocksInSelectedNote() {
-                replaceEntireTextSafely(updated)
-            }
+        if let updated = coordinator?.store.unfoldAllBlocksInSelectedNote() {
+            replaceEntireTextSafely(updated)
         }
     }
 
