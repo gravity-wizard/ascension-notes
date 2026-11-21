@@ -86,6 +86,13 @@ struct AscensionNotesApp: App {
     #endif
     @State private var store = NotesStore()
 
+    init() {
+        #if os(macOS)
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup("Ascension Notes") {
             AscensionNotesRootView(store: store)

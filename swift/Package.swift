@@ -8,13 +8,13 @@ let package = Package(
         .iOS(.v17)
     ],
     products: [
-        .library(
-            name: "AscensionCore",
-            targets: ["AscensionCore"]
-        ),
         .executable(
             name: "AscensionNotesApp",
             targets: ["AscensionNotesApp"]
+        ),
+        .library(
+            name: "AscensionCore",
+            targets: ["AscensionCore"]
         )
     ],
     targets: [
