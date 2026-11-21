@@ -179,19 +179,8 @@ struct AscensionNotesRootView: View {
 
     // MARK: - Column 1: Folders Sidebar (Apple Notes Style)
 
-    private var sidebarSelectionBinding: Binding<SidebarFilter?> {
-        Binding(
-            get: { store.sidebarFilter },
-            set: { newValue in
-                if let newValue {
-                    store.sidebarFilter = newValue
-                }
-            }
-        )
-    }
-
     private var foldersSidebar: some View {
-        List(selection: sidebarSelectionBinding) {
+        List(selection: $store.sidebarFilter) {
             Section("Library") {
                 sidebarRow(.all)
                 sidebarRow(.pinned)
@@ -248,6 +237,7 @@ struct AscensionNotesRootView: View {
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
         }
+        .contentShape(Rectangle())
         .tag(filter as SidebarFilter?)
     }
 
@@ -300,7 +290,7 @@ struct AscensionNotesRootView: View {
                 #endif
             }
         }
-        .navigationTitle(store.sidebarFilter.title)
+        .navigationTitle((store.sidebarFilter ?? .all).title)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -540,6 +530,37 @@ struct AscensionNotesRootView: View {
                         .padding(.vertical, 6)
                     }
                 }
+
+                // Bottom clickable AXIF bar so Ascenders can inspect AXIF data with 1 click
+                Divider()
+                HStack(spacing: 10) {
+                    Text(note.ownerAcode9)
+                        .font(.caption.monospaced().weight(.semibold))
+                        .foregroundStyle(notesGold)
+                    if let doc = note.compiledDocument(urlSafeDash: store.urlSafeDash) {
+                        Text("• \(doc.axif.munscCount) AXIF token(s)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("• Clock \(doc.axif.jesusClock)")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        store.showInspector.toggle()
+                    } label: {
+                        Label(
+                            store.showInspector ? "Hide AXIF" : "View AXIF Data",
+                            systemImage: "info.circle"
+                        )
+                        .font(.caption.weight(.medium))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+                .background(Color.secondary.opacity(0.05))
             }
             .navigationTitle("")
             .toolbar {
@@ -588,7 +609,8 @@ struct AscensionNotesRootView: View {
                     Button {
                         store.showInspector.toggle()
                     } label: {
-                        Label("AXIF Inspector", systemImage: "info.circle")
+                        Label("AXIF", systemImage: "info.circle")
+                            .labelStyle(.titleAndIcon)
                     }
                     .keyboardShortcut("i", modifiers: .command)
                     .help("Show AXIF & Acode9 Inspector (Cmd+I)")

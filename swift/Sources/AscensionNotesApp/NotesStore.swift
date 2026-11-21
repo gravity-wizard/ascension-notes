@@ -162,7 +162,7 @@ final class NotesStore {
     }
 
     var notes: [StoredNote] = []
-    var sidebarFilter: SidebarFilter = .all
+    var sidebarFilter: SidebarFilter? = .all
     var selectedNoteID: UUID?
 
     var viewMode: ViewLayerMode = .edit
@@ -211,7 +211,7 @@ final class NotesStore {
 
     var filteredNotes: [StoredNote] {
         let base: [StoredNote]
-        switch sidebarFilter {
+        switch sidebarFilter ?? .all {
         case .all:
             base = notes
         case .pinned:
@@ -351,6 +351,34 @@ final class NotesStore {
             notes[idx].updatedAt = Date()
             save()
         }
+    }
+
+    /// Create a fold marker and store its original text without touching rawText (NSTextView commits via replaceCharacters).
+    func registerFold(original: String) -> String? {
+        guard let id = selectedNote?.id,
+              let idx = notes.firstIndex(where: { $0.id == id }) else { return nil }
+        guard !original.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+
+        let lineCount = max(1, original.split(separator: "\n", omittingEmptySubsequences: false).count)
+        let firstLine = original
+            .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map { String($0).trimmingCharacters(in: .whitespaces) } ?? "Block"
+        let snippet = String(firstLine.prefix(24)).replacingOccurrences(of: "]", with: ")")
+        let shortId = String(UUID().uuidString.prefix(4)).lowercased()
+        let marker = "▸[Folded \(lineCount)L: \(snippet)… #\(shortId)]"
+
+        notes[idx].foldedBlocks[marker] = original
+        save()
+        return marker
+    }
+
+    func consumeFoldedOriginal(for marker: String) -> String? {
+        guard let id = selectedNote?.id,
+              let idx = notes.firstIndex(where: { $0.id == id }),
+              let original = notes[idx].foldedBlocks.removeValue(forKey: marker) else { return nil }
+        save()
+        return original
     }
 
     /// Fold a selected text span into a lossless placeholder marker stored on the note.
@@ -520,7 +548,7 @@ final class NotesStore {
         )) ?? "Ab2p^a40z"
 
         let targetFolder: NoteFolder
-        if case .folder(let f) = sidebarFilter {
+        if case .folder(let f) = sidebarFilter ?? .all {
             targetFolder = f
         } else {
             targetFolder = .quickNotes

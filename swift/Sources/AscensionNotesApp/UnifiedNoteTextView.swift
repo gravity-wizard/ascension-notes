@@ -300,16 +300,38 @@ struct UnifiedNoteTextView: NSViewRepresentable {
 
             let bodyFont = NSFont.systemFont(ofSize: store.editorFontSize)
             let titleFont = NSFont.systemFont(ofSize: store.editorFontSize + 7.0, weight: .bold)
-            let sel = tv.selectedRanges
+            let foldFont = NSFont.monospacedSystemFont(ofSize: max(11.0, store.editorFontSize - 1.5), weight: .semibold)
+            let foldBg = NSColor.systemYellow.withAlphaComponent(0.22)
+
+            let clampedRanges = tv.selectedRanges.compactMap { val -> NSValue? in
+                let r = val.rangeValue
+                let loc = min(max(0, r.location), len)
+                let maxLen = max(0, len - loc)
+                return NSValue(range: NSRange(location: loc, length: min(r.length, maxLen)))
+            }
 
             storage.beginEditing()
             storage.addAttribute(.font, value: bodyFont, range: NSRange(location: 0, length: len))
+            storage.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: len))
             let line1 = ns.lineRange(for: NSRange(location: 0, length: 0))
             if line1.length > 0 {
                 storage.addAttribute(.font, value: titleFont, range: line1)
             }
+            if let markers = store.selectedNote?.foldedBlocks.keys {
+                for marker in markers {
+                    var search = 0
+                    while search < len {
+                        let found = ns.range(of: marker, range: NSRange(location: search, length: len - search))
+                        if found.location == NSNotFound { break }
+                        storage.addAttributes([.font: foldFont, .backgroundColor: foldBg], range: found)
+                        search = found.location + found.length
+                    }
+                }
+            }
             storage.endEditing()
-            tv.selectedRanges = sel
+            if !clampedRanges.isEmpty {
+                tv.selectedRanges = clampedRanges
+            }
         }
     }
 }
@@ -336,8 +358,8 @@ final class AscensionNSTextView: NSTextView {
     @objc func prefixBullet(_ sender: Any?) { prefixSelectedLines(with: "• ") }
 
     @objc func expandTextSize(_ sender: Any?) {
-        if let marker = markerInsideSelection(), let updated = coordinator?.store.unfoldMarker(marker) {
-            replaceEntireTextSafely(updated)
+        if let marker = markerInsideSelection() {
+            unfoldMarkerInPlace(marker)
             return
         }
         coordinator?.store.expandEditorFontSize()
@@ -345,30 +367,53 @@ final class AscensionNSTextView: NSTextView {
 
     @objc func shrinkTextSize(_ sender: Any?) {
         let sel = selectedRange()
-        if sel.length > 0, let updated = coordinator?.store.foldBlock(rangeInRaw: sel) {
-            replaceEntireTextSafely(updated)
+        if sel.length > 0 {
+            foldRangeInPlace(sel)
             return
         }
         coordinator?.store.shrinkEditorFontSize()
     }
 
     @objc func foldSelectedBlock(_ sender: Any?) {
-        let sel = selectedRange()
-        if let updated = coordinator?.store.foldBlock(rangeInRaw: sel) {
-            replaceEntireTextSafely(updated)
-        }
+        foldRangeInPlace(selectedRange())
     }
 
     @objc func unfoldHoveredBlock(_ sender: NSMenuItem) {
-        if let marker = sender.representedObject as? String,
-           let updated = coordinator?.store.unfoldMarker(marker) {
-            replaceEntireTextSafely(updated)
+        if let marker = sender.representedObject as? String {
+            unfoldMarkerInPlace(marker)
         }
     }
 
     @objc func unfoldAllBlocks(_ sender: Any?) {
-        if let updated = coordinator?.store.unfoldAllBlocksInSelectedNote() {
-            replaceEntireTextSafely(updated)
+        guard let markers = coordinator?.store.selectedNote?.foldedBlocks.keys else { return }
+        for marker in Array(markers) {
+            unfoldMarkerInPlace(marker)
+        }
+    }
+
+    private func foldRangeInPlace(_ sel: NSRange) {
+        let ns = string as NSString
+        guard sel.location != NSNotFound,
+              sel.length > 0,
+              sel.location + sel.length <= ns.length else { return }
+        let selectedText = ns.substring(with: sel)
+        guard let marker = coordinator?.store.registerFold(original: selectedText) else { return }
+        if shouldChangeText(in: sel, replacementString: marker) {
+            replaceCharacters(in: sel, with: marker)
+            didChangeText()
+            setSelectedRange(NSRange(location: sel.location, length: (marker as NSString).length))
+        }
+    }
+
+    private func unfoldMarkerInPlace(_ marker: String) {
+        let ns = string as NSString
+        let markerRange = ns.range(of: marker)
+        guard markerRange.location != NSNotFound,
+              let original = coordinator?.store.consumeFoldedOriginal(for: marker) else { return }
+        if shouldChangeText(in: markerRange, replacementString: original) {
+            replaceCharacters(in: markerRange, with: original)
+            didChangeText()
+            setSelectedRange(NSRange(location: markerRange.location, length: (original as NSString).length))
         }
     }
 
@@ -385,30 +430,24 @@ final class AscensionNSTextView: NSTextView {
         return nil
     }
 
-    private func replaceEntireTextSafely(_ updated: String) {
-        let full = NSRange(location: 0, length: (string as NSString).length)
-        if shouldChangeText(in: full, replacementString: updated) {
-            string = updated
-            didChangeText()
-            coordinator?.lastSyncedText = updated
-        }
-    }
-
     private func wrapSelection(prefix: String, suffix: String) {
         let range = selectedRange()
         let ns = string as NSString
+        guard range.location != NSNotFound, range.location + range.length <= ns.length else { return }
         let inner = range.length > 0 ? ns.substring(with: range) : "text"
         let replacement = "\(prefix)\(inner)\(suffix)"
         if shouldChangeText(in: range, replacementString: replacement) {
             replaceCharacters(in: range, with: replacement)
             didChangeText()
-            setSelectedRange(NSRange(location: range.location + prefix.count, length: inner.count))
+            setSelectedRange(NSRange(location: range.location + prefix.count, length: (inner as NSString).length))
         }
     }
 
     private func prefixSelectedLines(with prefix: String) {
         let ns = string as NSString
-        let lineRange = ns.lineRange(for: selectedRange())
+        let sel = selectedRange()
+        guard sel.location != NSNotFound, sel.location + sel.length <= ns.length else { return }
+        let lineRange = ns.lineRange(for: sel)
         let block = ns.substring(with: lineRange)
         let lines = block.split(separator: "\n", omittingEmptySubsequences: false)
         let updated = lines.map { line in
