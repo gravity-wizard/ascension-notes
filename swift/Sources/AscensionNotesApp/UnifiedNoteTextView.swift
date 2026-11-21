@@ -35,14 +35,18 @@ struct UnifiedNoteTextView: NSViewRepresentable {
         textView.isEditable = true
         textView.isSelectable = true
         textView.isRichText = false
+        textView.importsGraphics = false
         textView.allowsUndo = true
         textView.usesFontPanel = true
         textView.usesFindBar = false
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
+        textView.minSize = NSSize(width: 0, height: 400)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.drawsBackground = false
         textView.textContainerInset = NSSize(width: 24, height: 10)
+        textView.textContainer?.containerSize = NSSize(width: 600, height: CGFloat.greatestFiniteMagnitude)
         textView.textContainer?.widthTracksTextView = true
 
         textView.isContinuousSpellCheckingEnabled = true
@@ -65,6 +69,13 @@ struct UnifiedNoteTextView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? AscensionNSTextView else { return }
         context.coordinator.store = store
+        textView.isEditable = true
+        textView.isSelectable = true
+
+        let contentSize = scrollView.contentSize
+        if contentSize.height > 0, abs(textView.minSize.height - contentSize.height) > 4 {
+            textView.minSize = NSSize(width: 0, height: contentSize.height)
+        }
 
         let desiredBottom = CGFloat(max(280.0, Double(scrollView.bounds.height) * 0.65))
         if abs(scrollView.contentInsets.bottom - desiredBottom) > 8 {
@@ -187,7 +198,10 @@ struct UnifiedNoteTextView: NSViewRepresentable {
             } else {
                 store.updateSelectedFontSpans(spans)
             }
-            reapplyVisualLine1AndFoldsPreservingSpans(on: tv)
+            DispatchQueue.main.async { [weak self, weak tv] in
+                guard let self, let tv, !tv.hasMarkedText() else { return }
+                self.reapplyVisualLine1AndFoldsPreservingSpans(on: tv)
+            }
         }
 
         func persistCurrentSpans(from tv: AscensionNSTextView) {
@@ -372,15 +386,18 @@ struct UnifiedNoteTextView: NSViewRepresentable {
                 }
             }
             storage.endEditing()
-            if !clampedRanges.isEmpty {
-                tv.selectedRanges = clampedRanges
-            }
         }
     }
 }
 
 final class AscensionNSTextView: NSTextView {
     weak var coordinator: UnifiedNoteTextView.Coordinator?
+
+    override func paste(_ sender: Any?) {
+        pasteAsPlainText(sender)
+        needsLayout = true
+        needsDisplay = true
+    }
 
     override func didChangeText() {
         super.didChangeText()
