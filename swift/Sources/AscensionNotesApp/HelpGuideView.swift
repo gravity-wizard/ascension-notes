@@ -66,6 +66,16 @@ struct HelpGuideView: View {
                 )
 
                 helpSection(
+                    icon: "arrow.up.left.and.arrow.down.right",
+                    title: "Focus Mode & Clear the Deck (Cmd + Option + Z / cmd+A+Z)",
+                    bullets: [
+                        "Focus Mode (Cmd + Opt + Z): Instantly clears the deck into Clean View—collapses sidebar folders, note list, search bar, and inspector into a distraction-free, full-width canvas.",
+                        "Back-Button-View-Settings: Press Cmd + Opt + Z again or click the prominent top 'Back to Settings / Exit Focus' button to restore your split-view layout and previous settings.",
+                        "Creating a New Note (Cmd + N) automatically clears any active search query so your newly minted note is immediately visible and focused."
+                    ]
+                )
+
+                helpSection(
                     icon: "folder.badge.gearshape",
                     title: "Where Help Text Lives During Development",
                     bullets: [

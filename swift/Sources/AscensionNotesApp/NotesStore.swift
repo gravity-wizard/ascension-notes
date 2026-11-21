@@ -298,6 +298,28 @@ final class NotesStore {
     var spellcheckRevision: Int = 0
     var editorFontSize: Double = 15.0
 
+    var isFocusMode: Bool = false
+    var previousViewMode: ViewLayerMode = .edit
+    var previousShowInspector: Bool = false
+    var previousShowFindBar: Bool = false
+
+    func toggleFocusMode() {
+        if isFocusMode {
+            isFocusMode = false
+            viewMode = previousViewMode
+            showInspector = previousShowInspector
+            showFindBar = previousShowFindBar
+        } else {
+            previousViewMode = viewMode
+            previousShowInspector = showInspector
+            previousShowFindBar = showFindBar
+            isFocusMode = true
+            viewMode = .clean
+            showInspector = false
+            showFindBar = false
+        }
+    }
+
     var cursorSpellTarget: CursorSpellTarget? = nil
     var skipVowelsPrompt: SkipVowelsPromptRequest? = nil
     var activeLightboxRequest: RetinaLightboxRequest? = nil
@@ -1288,6 +1310,7 @@ final class NotesStore {
     }
 
     func createNewNote() {
+        query = ""
         let now = Date()
         let freshCode = claimUnusedAcode(fallbackNow: Int64(now.timeIntervalSince1970))
 

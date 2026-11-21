@@ -145,6 +145,14 @@ struct AscensionNotesApp: App {
                 .keyboardShortcut("c", modifiers: [.command, .option])
                 .disabled(store.selectedNote == nil)
             }
+            CommandGroup(after: .sidebar) {
+                Button(store.isFocusMode ? "Exit Focus Mode" : "Focus Mode (Clean View)") {
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        store.toggleFocusMode()
+                    }
+                }
+                .keyboardShortcut("z", modifiers: [.command, .option])
+            }
             CommandGroup(after: .textFormatting) {
                 Button("Grow Selected Text") {
                     #if os(macOS)
@@ -238,6 +246,11 @@ struct AscensionNotesRootView: View {
             notesListColumn
         } detail: {
             noteCanvasDetail
+        }
+        .onChange(of: store.isFocusMode) { _, focus in
+            withAnimation(.easeInOut(duration: 0.22)) {
+                columnVisibility = focus ? .detailOnly : .all
+            }
         }
         .tint(notesGold)
         .inspector(isPresented: $store.showInspector) {
@@ -591,6 +604,11 @@ struct AscensionNotesRootView: View {
     private var noteCanvasDetail: some View {
         if let note = store.selectedNote {
             VStack(spacing: 0) {
+                if store.isFocusMode {
+                    focusModeHeaderBanner
+                    Divider()
+                }
+
                 if store.showFindBar {
                     inlineNoteFindStrip
                     Divider()
@@ -838,6 +856,20 @@ struct AscensionNotesRootView: View {
                     .help("Find in Note (Cmd+F)")
 
                     Button {
+                        withAnimation(.easeInOut(duration: 0.22)) {
+                            store.toggleFocusMode()
+                        }
+                    } label: {
+                        Label(
+                            store.isFocusMode ? "Exit Focus" : "Focus",
+                            systemImage: store.isFocusMode ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right"
+                        )
+                        .labelStyle(.titleAndIcon)
+                    }
+                    .keyboardShortcut("z", modifiers: [.command, .option])
+                    .help("Focus Mode: Clean View & Clear the Deck (Cmd+Opt+Z / Cmd+A+Z)")
+
+                    Button {
                         store.showA3odex = true
                     } label: {
                         Label("A3odex", systemImage: "books.vertical")
@@ -916,6 +948,41 @@ struct AscensionNotesRootView: View {
                 description: Text("Choose a note on the left or press Cmd+N to create one.")
             )
         }
+    }
+
+    private var focusModeHeaderBanner: some View {
+        HStack(spacing: 12) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    store.toggleFocusMode()
+                }
+            } label: {
+                Label("Back to Settings / Exit Focus (Cmd+Opt+Z)", systemImage: "chevron.backward.circle.fill")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(notesGold)
+
+            Spacer()
+
+            Text("✨ FOCUS MODE • CLEAN VIEW")
+                .font(.caption.monospaced().weight(.bold))
+                .foregroundStyle(notesGold)
+
+            Spacer()
+
+            Button {
+                store.viewMode = (store.viewMode == .clean) ? .edit : .clean
+            } label: {
+                Text(store.viewMode == .clean ? "Edit" : "Clean View")
+                    .font(.caption.weight(.medium))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Color.secondary.opacity(0.08))
     }
 
     private var inlineNoteFindStrip: some View {
