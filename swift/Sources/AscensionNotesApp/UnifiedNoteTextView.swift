@@ -311,6 +311,48 @@ struct UnifiedNoteTextView: NSViewRepresentable {
                 return
             }
             refreshCursorSpellTarget(on: tv)
+            checkForCursorPreemptEmoji(on: tv)
+        }
+
+        func checkForCursorPreemptEmoji(on tv: AscensionNSTextView) {
+            let sel = tv.selectedRange()
+            guard sel.location != NSNotFound, sel.location > 0 else { return }
+            let text = tv.string as NSString
+            guard sel.location <= text.length else { return }
+
+            if sel.location >= 4 {
+                let fourRange = NSRange(location: sel.location - 4, length: 4)
+                if text.substring(with: fourRange) == "🔻🔻" {
+                    store.preemptRecentEmoji("🔻🔻")
+                    return
+                }
+            }
+
+            let charRange = text.rangeOfComposedCharacterSequence(at: sel.location - 1)
+            let snippet = text.substring(with: charRange)
+            if Self.isEmojiString(snippet) {
+                store.preemptRecentEmoji(snippet)
+                return
+            }
+
+            if sel.location < text.length {
+                let forwardRange = text.rangeOfComposedCharacterSequence(at: sel.location)
+                let forwardSnippet = text.substring(with: forwardRange)
+                if Self.isEmojiString(forwardSnippet) {
+                    store.preemptRecentEmoji(forwardSnippet)
+                }
+            }
+        }
+
+        static func isEmojiString(_ s: String) -> Bool {
+            guard !s.isEmpty else { return false }
+            for scalar in s.unicodeScalars {
+                if scalar.value < 0x2000 { return false }
+                if scalar.properties.isEmoji && (scalar.properties.isEmojiPresentation || scalar.value > 0x2388) {
+                    return true
+                }
+            }
+            return false
         }
 
         func refreshCursorSpellTarget(on tv: AscensionNSTextView) {
@@ -366,6 +408,7 @@ struct UnifiedNoteTextView: NSViewRepresentable {
             } else {
                 store.updateSelectedFontSpans(spans)
             }
+            checkForCursorPreemptEmoji(on: tv)
             DispatchQueue.main.async { [weak self, weak tv] in
                 guard let self, let tv, !tv.hasMarkedText() else { return }
                 self.reapplyVisualLine1AndFoldsPreservingSpans(on: tv)

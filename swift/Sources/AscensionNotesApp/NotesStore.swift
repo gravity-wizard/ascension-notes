@@ -369,6 +369,14 @@ final class NotesStore {
         }
     }
 
+    func preemptRecentEmoji(_ emoji: String) {
+        let clean = emoji.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        registerRecentEmoji(clean)
+        lastInsertedEmoji = clean
+        recentEmojiCycleIndex = 0
+    }
+
     func repeatLastEmoji() {
         if viewMode != .edit {
             viewMode = .edit
@@ -1053,7 +1061,22 @@ final class NotesStore {
             changed = true
         }
         if changed {
+            harvestRecentEmojis(from: newText)
             save()
+        }
+    }
+
+    func harvestRecentEmojis(from text: String) {
+        for char in text {
+            for scalar in char.unicodeScalars {
+                if scalar.properties.isEmoji && (scalar.properties.isEmojiPresentation || scalar.value > 0x2388) {
+                    let s = String(char)
+                    if s != "🔻" && !recentEmojis.contains(s) {
+                        recentEmojis.append(s)
+                    }
+                    break
+                }
+            }
         }
     }
 
