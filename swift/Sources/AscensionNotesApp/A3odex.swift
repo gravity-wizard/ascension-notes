@@ -124,6 +124,7 @@ public enum A3odexCatalog: Sendable {
         A3odexEntry(token: "NrmA", canonical: "Norma A", tier: .funs, meaning: "Skip-vowels 4-char FUN for Norma A (Where's Norma? Book A)."),
         A3odexEntry(token: "NrmB", canonical: "Norma B", tier: .funs, meaning: "Skip-vowels 4-char FUN for Norma B (Where's Norma? Book B)."),
         A3odexEntry(token: "GSii", canonical: "GSii", tier: .funs, meaning: "Verified double-i (ii) 4-char FUN used by certified ILS ATSS."),
+        A3odexEntry(token: "qst2", canonical: "qst2", tier: .funs, meaning: "Question-to dispatch prefix (paired with ftrq2) across AntTeam channels."),
 
         // 5c FUNCs
         A3odexEntry(token: "N0rma", canonical: "Norma", tier: .funcs, meaning: "Internal-zero leet MUNSC for Norma in Chamber Luncheon logs."),
