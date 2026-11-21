@@ -811,8 +811,12 @@ final class AscensionNSTextView: NSTextView {
     private func performNormalizedPlainTextPaste(_ sender: Any?) {
         let rawPaste = NSPasteboard.general.string(forType: .string)
         let hasPlainText = !(rawPaste ?? "").isEmpty
+        let hasCopiedImageFile = ((NSPasteboard.general.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL]) ?? []).contains(where: { RetinaImageSupport.isImageFileURL($0) })
 
-        if !hasPlainText && RetinaImageSupport.pasteboardHasImage(NSPasteboard.general) {
+        if (!hasPlainText || hasCopiedImageFile) && RetinaImageSupport.pasteboardHasImage(NSPasteboard.general) {
             let images = RetinaImageSupport.extractImages(from: NSPasteboard.general)
             if !images.isEmpty {
                 let currentNS = string as NSString
