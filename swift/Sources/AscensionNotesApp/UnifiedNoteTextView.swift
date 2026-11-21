@@ -22,7 +22,7 @@ struct UnifiedNoteTextView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
+        let scrollView = AscensionNoteScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.borderType = .noBorder
@@ -30,7 +30,19 @@ struct UnifiedNoteTextView: NSViewRepresentable {
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.contentInsets = NSEdgeInsets(top: 6, left: 0, bottom: 360, right: 0)
 
-        let textView = AscensionNSTextView()
+        let textStorage = NSTextStorage()
+        let layoutManager = NSLayoutManager()
+        layoutManager.allowsNonContiguousLayout = false
+        textStorage.addLayoutManager(layoutManager)
+
+        let textContainer = NSTextContainer(size: NSSize(width: 600, height: CGFloat.greatestFiniteMagnitude))
+        textContainer.widthTracksTextView = true
+        layoutManager.addTextContainer(textContainer)
+
+        let textView = AscensionNSTextView(
+            frame: NSRect(x: 0, y: 0, width: 600, height: 400),
+            textContainer: textContainer
+        )
         textView.coordinator = context.coordinator
         textView.isEditable = true
         textView.isSelectable = true
@@ -46,8 +58,6 @@ struct UnifiedNoteTextView: NSViewRepresentable {
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.drawsBackground = false
         textView.textContainerInset = NSSize(width: 24, height: 10)
-        textView.textContainer?.containerSize = NSSize(width: 600, height: CGFloat.greatestFiniteMagnitude)
-        textView.textContainer?.widthTracksTextView = true
 
         textView.isContinuousSpellCheckingEnabled = true
         textView.isGrammarCheckingEnabled = true
@@ -72,14 +82,27 @@ struct UnifiedNoteTextView: NSViewRepresentable {
         textView.isEditable = true
         textView.isSelectable = true
 
-        let contentSize = scrollView.contentSize
-        if contentSize.height > 0, abs(textView.minSize.height - contentSize.height) > 4 {
-            textView.minSize = NSSize(width: 0, height: contentSize.height)
-        }
-
         let desiredBottom = CGFloat(max(280.0, Double(scrollView.bounds.height) * 0.65))
         if abs(scrollView.contentInsets.bottom - desiredBottom) > 8 {
             scrollView.contentInsets = NSEdgeInsets(top: 6, left: 0, bottom: desiredBottom, right: 0)
+        }
+
+        let contentSize = scrollView.contentSize
+        var geometryChanged = false
+        if contentSize.width > 0, abs(textView.frame.width - contentSize.width) > 1 {
+            var frame = textView.frame
+            frame.size.width = contentSize.width
+            textView.frame = frame
+            geometryChanged = true
+        }
+
+        let minHeight = max(200.0, contentSize.height)
+        if abs(textView.minSize.height - minHeight) > 4 {
+            textView.minSize = NSSize(width: 0, height: minHeight)
+            geometryChanged = true
+        }
+        if geometryChanged {
+            textView.ensureFullLayoutAndFrame()
         }
 
         if context.coordinator.lastAutoCap != autoCapitalizeNewLines {
@@ -110,15 +133,7 @@ struct UnifiedNoteTextView: NSViewRepresentable {
         textView.isAutomaticTextReplacementEnabled = enabled
     }
 
-    private func applyAllTypography(to textView: NSTextView, defaultSize: Double, spans: [FontSizeSpan]) {
-        guard let storage = textView.textStorage else { return }
-        let fullStr = storage.string as NSString
-        let totalLen = fullStr.length
-        guard totalLen > 0 else {
-            textView.font = NSFont.systemFont(ofSize: defaultSize)
-            return
-        }
-
+    private func applyAllTypography(to textView: AscensionNSTextView, defaultSize: Double, spans: [FontSizeSpan]) {
         let bodyFont = NSFont.systemFont(ofSize: defaultSize)
         let titleFont = NSFont.systemFont(ofSize: defaultSize + 7.0, weight: .bold)
         let foldFont = NSFont.monospacedSystemFont(ofSize: max(11.0, defaultSize - 1.5), weight: .semibold)
@@ -127,6 +142,20 @@ struct UnifiedNoteTextView: NSViewRepresentable {
 
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 4
+
+        guard let storage = textView.textStorage else { return }
+        let fullStr = storage.string as NSString
+        let totalLen = fullStr.length
+        guard totalLen > 0 else {
+            textView.font = titleFont
+            textView.typingAttributes = [
+                .font: titleFont,
+                .foregroundColor: bodyColor,
+                .paragraphStyle: paragraph,
+            ]
+            textView.ensureFullLayoutAndFrame()
+            return
+        }
 
         let selectedRanges = textView.selectedRanges
         storage.beginEditing()
@@ -172,6 +201,7 @@ struct UnifiedNoteTextView: NSViewRepresentable {
             .foregroundColor: bodyColor,
             .paragraphStyle: paragraph,
         ]
+        textView.ensureFullLayoutAndFrame()
     }
 
     @MainActor
@@ -350,13 +380,25 @@ struct UnifiedNoteTextView: NSViewRepresentable {
             guard let storage = tv.textStorage else { return }
             let ns = storage.string as NSString
             let len = ns.length
-            guard len > 0 else { return }
+            guard len > 0 else {
+                tv.ensureFullLayoutAndFrame()
+                return
+            }
 
             let foldFont = NSFont.monospacedSystemFont(ofSize: max(11.0, store.editorFontSize - 1.5), weight: .semibold)
             let foldBg = NSColor.systemYellow.withAlphaComponent(0.22)
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineSpacing = 4
+
+            let savedSelections = tv.selectedRanges
+            let savedTyping = tv.typingAttributes
 
             let line1 = ns.lineRange(for: NSRange(location: 0, length: 0))
             storage.beginEditing()
+            storage.addAttributes(
+                [.foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph],
+                range: NSRange(location: 0, length: len)
+            )
             storage.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: len))
 
             // Keep existing per-character font sizes, updating only Line 1 bold weight
@@ -380,17 +422,131 @@ struct UnifiedNoteTextView: NSViewRepresentable {
                 }
             }
             storage.endEditing()
+
+            let clampedSelections: [NSValue] = savedSelections.map { val in
+                let r = val.rangeValue
+                let loc = max(0, min(r.location, len))
+                let rLen = max(0, min(r.length, len - loc))
+                return NSValue(range: NSRange(location: loc, length: rLen))
+            }
+            if !clampedSelections.isEmpty {
+                tv.selectedRanges = clampedSelections
+            }
+            var restoredTyping = savedTyping
+            restoredTyping[.paragraphStyle] = paragraph
+            if restoredTyping[.foregroundColor] == nil {
+                restoredTyping[.foregroundColor] = NSColor.labelColor
+            }
+            tv.typingAttributes = restoredTyping
+            tv.ensureFullLayoutAndFrame()
         }
+    }
+}
+
+final class AscensionNoteScrollView: NSScrollView {
+    override func mouseDown(with event: NSEvent) {
+        if let tv = documentView as? NSTextView {
+            window?.makeFirstResponder(tv)
+            let endLoc = (tv.string as NSString).length
+            tv.setSelectedRange(NSRange(location: endLoc, length: 0))
+            return
+        }
+        super.mouseDown(with: event)
     }
 }
 
 final class AscensionNSTextView: NSTextView {
     weak var coordinator: UnifiedNoteTextView.Coordinator?
 
-    override func paste(_ sender: Any?) {
-        pasteAsPlainText(sender)
+    func ensureFullLayoutAndFrame() {
+        guard let tc = textContainer, let lm = layoutManager else { return }
+        lm.ensureLayout(for: tc)
+        sizeToFit()
         needsLayout = true
         needsDisplay = true
+    }
+
+    override func paste(_ sender: Any?) {
+        performNormalizedPlainTextPaste(sender)
+    }
+
+    override func pasteAsPlainText(_ sender: Any?) {
+        performNormalizedPlainTextPaste(sender)
+    }
+
+    private func performNormalizedPlainTextPaste(_ sender: Any?) {
+        guard let rawPaste = NSPasteboard.general.string(forType: .string) else {
+            super.pasteAsPlainText(sender)
+            ensureFullLayoutAndFrame()
+            return
+        }
+
+        let clean = rawPaste
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .replacingOccurrences(of: "\u{FFFC}", with: "")
+
+        let currentNS = string as NSString
+        let rawSel = selectedRange()
+        guard rawSel.location != NSNotFound else {
+            super.pasteAsPlainText(sender)
+            ensureFullLayoutAndFrame()
+            return
+        }
+        let clampedLoc = max(0, min(rawSel.location, currentNS.length))
+        let clampedLen = max(0, min(rawSel.length, currentNS.length - clampedLoc))
+        let sel = NSRange(location: clampedLoc, length: clampedLen)
+
+        let defaultBody = CGFloat(coordinator?.store.editorFontSize ?? 15.0)
+        let titleFont = NSFont.systemFont(ofSize: defaultBody + 7.0, weight: .bold)
+        let bodyFont = NSFont.systemFont(ofSize: defaultBody)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 4
+
+        let bodyAttrs: [NSAttributedString.Key: Any] = [
+            .font: bodyFont,
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: paragraph,
+        ]
+
+        guard shouldChangeText(in: sel, replacementString: clean) else { return }
+
+        replaceCharacters(in: sel, with: clean)
+        let insertedLen = (clean as NSString).length
+        let insertedRange = NSRange(location: sel.location, length: insertedLen)
+
+        if let storage = textStorage, insertedLen > 0 {
+            let fullNS = storage.string as NSString
+            let safeLen = min(insertedRange.length, max(0, fullNS.length - insertedRange.location))
+            let safeInserted = NSRange(location: insertedRange.location, length: safeLen)
+            if safeInserted.length > 0 {
+                let line1 = fullNS.lineRange(for: NSRange(location: 0, length: 0))
+                storage.beginEditing()
+                storage.setAttributes(bodyAttrs, range: safeInserted)
+                let titleOverlap = NSIntersectionRange(safeInserted, line1)
+                if titleOverlap.length > 0 {
+                    storage.addAttribute(.font, value: titleFont, range: titleOverlap)
+                }
+                storage.endEditing()
+            }
+        }
+
+        didChangeText()
+
+        let updatedLen = (string as NSString).length
+        let endLoc = min(sel.location + insertedLen, updatedLen)
+        let cursorRange = NSRange(location: endLoc, length: 0)
+        setSelectedRange(cursorRange)
+
+        let afterLine1 = (string as NSString).lineRange(for: NSRange(location: 0, length: 0))
+        let cursorInTitle = endLoc < afterLine1.upperBound && (string as NSString).length > 0
+        typingAttributes = [
+            .font: cursorInTitle ? titleFont : bodyFont,
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: paragraph,
+        ]
+        ensureFullLayoutAndFrame()
+        scrollRangeToVisible(cursorRange)
     }
 
     override func didChangeText() {
