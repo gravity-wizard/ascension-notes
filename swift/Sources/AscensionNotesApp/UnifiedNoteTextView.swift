@@ -273,6 +273,20 @@ struct UnifiedNoteTextView: NSViewRepresentable {
                     tv.checkTextInDocument(nil)
                     self.refreshCursorSpellTarget(on: tv)
                     return true
+
+                case .insertText(let snippet):
+                    let sel = tv.selectedRange()
+                    let currentNS = tv.string as NSString
+                    let safeLoc = sel.location == NSNotFound ? currentNS.length : min(sel.location, currentNS.length)
+                    let safeLen = sel.location == NSNotFound ? 0 : min(sel.length, currentNS.length - safeLoc)
+                    let targetRange = NSRange(location: safeLoc, length: safeLen)
+                    guard tv.shouldChangeText(in: targetRange, replacementString: snippet) else { return false }
+                    tv.replaceCharacters(in: targetRange, with: snippet)
+                    tv.didChangeText()
+                    let newPos = safeLoc + (snippet as NSString).length
+                    tv.setSelectedRange(NSRange(location: newPos, length: 0))
+                    tv.window?.makeFirstResponder(tv)
+                    return true
                 }
             }
         }
@@ -721,8 +735,11 @@ final class AscensionNoteScrollView: NSScrollView {
     override func mouseDown(with event: NSEvent) {
         if let tv = documentView as? NSTextView {
             window?.makeFirstResponder(tv)
-            let endLoc = (tv.string as NSString).length
-            tv.setSelectedRange(NSRange(location: endLoc, length: 0))
+            let ptInTV = tv.convert(event.locationInWindow, from: nil)
+            let charIndex = tv.characterIndexForInsertion(at: ptInTV)
+            let currentLen = (tv.string as NSString).length
+            let safeIndex = max(0, min(charIndex, currentLen))
+            tv.setSelectedRange(NSRange(location: safeIndex, length: 0))
             return
         }
         super.mouseDown(with: event)
@@ -745,7 +762,13 @@ final class AscensionNSTextView: NSTextView {
     func ensureFullLayoutAndFrame() {
         guard let tc = textContainer, let lm = layoutManager else { return }
         lm.ensureLayout(for: tc)
-        sizeToFit()
+        let used = lm.usedRect(for: tc)
+        let minH = max(minSize.height, used.height + 40)
+        var fr = frame
+        if fr.size.height < minH {
+            fr.size.height = minH
+            frame = fr
+        }
         needsLayout = true
         needsDisplay = true
     }

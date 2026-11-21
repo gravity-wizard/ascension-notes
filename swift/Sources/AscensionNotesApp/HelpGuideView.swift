@@ -76,6 +76,16 @@ struct HelpGuideView: View {
                 )
 
                 helpSection(
+                    icon: "face.smiling",
+                    title: "Repeat Emoji (Cmd + D) & AAid (AAIi Emergency Lookup)",
+                    bullets: [
+                        "Repeat Last Emoji (Cmd + D): Instantly re-inserts your last used emoji at the cursor. Defaults to 🔻🔻 DownDittos, with a quick-tap menu for favorites (🔻🔻, 😎, 🐸, 🐬, 🗝️, 🪿, 🆒).",
+                        "AAid & AAIi (Ab2p^a00z): Permanent Anonymous Ascension Identification token locked to spy, enabling 911 operators and emergency responders to access medical info quickly.",
+                        "Stabilized Bottom Bar: Displays your Acode9, AAid, and live Jesus Clock while keeping inline spell check actions stationary so mouse clicks never cause text to jump."
+                    ]
+                )
+
+                helpSection(
                     icon: "folder.badge.gearshape",
                     title: "Where Help Text Lives During Development",
                     bullets: [

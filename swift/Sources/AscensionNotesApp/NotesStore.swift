@@ -109,9 +109,10 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
     public var foldedBlocks: [String: String]
     public var fontSpans: [FontSizeSpan]
     public var attachments: [NoteAttachment]
+    public var authorAAid: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, rawText, ownerAcode9, folder, isPinned, createdAt, updatedAt, foldedBlocks, fontSpans, attachments
+        case id, rawText, ownerAcode9, folder, isPinned, createdAt, updatedAt, foldedBlocks, fontSpans, attachments, authorAAid
     }
 
     public init(
@@ -124,7 +125,8 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
         updatedAt: Date = Date(),
         foldedBlocks: [String: String] = [:],
         fontSpans: [FontSizeSpan] = [],
-        attachments: [NoteAttachment] = []
+        attachments: [NoteAttachment] = [],
+        authorAAid: String? = "Ab2p^a00z"
     ) {
         self.id = id
         self.rawText = rawText
@@ -136,6 +138,7 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
         self.foldedBlocks = foldedBlocks
         self.fontSpans = fontSpans
         self.attachments = attachments
+        self.authorAAid = authorAAid
     }
 
     public init(from decoder: Decoder) throws {
@@ -150,6 +153,7 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
         foldedBlocks = try c.decodeIfPresent([String: String].self, forKey: .foldedBlocks) ?? [:]
         fontSpans = try c.decodeIfPresent([FontSizeSpan].self, forKey: .fontSpans) ?? []
         attachments = try c.decodeIfPresent([NoteAttachment].self, forKey: .attachments) ?? []
+        authorAAid = try c.decodeIfPresent(String.self, forKey: .authorAAid) ?? "Ab2p^a00z"
     }
 
     public var derivedTitle: String {
@@ -267,6 +271,7 @@ public struct RetinaLightboxRequest: Identifiable, Equatable, Sendable {
 public enum TextViewQuickAction: Sendable {
     case replaceRange(location: Int, length: Int, with: String, learnWord: String?)
     case learnOnly(String)
+    case insertText(String)
 }
 
 @MainActor
@@ -286,6 +291,9 @@ final class NotesStore {
     var a3odexEntries: [A3odexEntry] = A3odexCatalog.starterEntries
     var activeSidebarFilter: SidebarFilter = .all
     var selectedNoteID: UUID?
+
+    var authorAAid: String = "Ab2p^a00z"
+    var lastInsertedEmoji: String = "🔻🔻"
 
     var viewMode: ViewLayerMode = .edit
     var showFindBar: Bool = false
@@ -318,6 +326,20 @@ final class NotesStore {
             showInspector = false
             showFindBar = false
         }
+    }
+
+    func repeatLastEmoji() {
+        let snippet = lastInsertedEmoji.isEmpty ? "🔻🔻" : lastInsertedEmoji
+        if let handler = activeTextViewActionHandler, handler(.insertText(snippet)) {
+            return
+        }
+        guard let note = selectedNote else { return }
+        updateSelectedFullText(note.rawText + snippet, fontSpans: note.fontSpans)
+    }
+
+    func setFavoriteEmojiAndInsert(_ emoji: String) {
+        lastInsertedEmoji = emoji
+        repeatLastEmoji()
     }
 
     var cursorSpellTarget: CursorSpellTarget? = nil
@@ -804,8 +826,10 @@ final class NotesStore {
         guard let doc = target.compiledDocument(urlSafeDash: urlSafeDash, rules: customRules) else {
             return nil
         }
+        let aaid = target.authorAAid ?? authorAAid
         var text = (try? doc.exportMarkdown(
             title: target.displayTitle,
+            authorAAid: aaid,
             includeFrontmatter: includeFrontmatter,
             includeAXIFFooter: includeAXIFFooter,
             useRawText: useRawText

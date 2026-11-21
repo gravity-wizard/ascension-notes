@@ -125,6 +125,8 @@ public enum A3odexCatalog: Sendable {
         A3odexEntry(token: "NrmB", canonical: "Norma B", tier: .funs, meaning: "Skip-vowels 4-char FUN for Norma B (Where's Norma? Book B)."),
         A3odexEntry(token: "GSii", canonical: "GSii", tier: .funs, meaning: "Verified double-i (ii) 4-char FUN used by certified ILS ATSS."),
         A3odexEntry(token: "qst2", canonical: "qst2", tier: .funs, meaning: "Question-to dispatch prefix (paired with ftrq2) across AntTeam channels."),
+        A3odexEntry(token: "AAIi", canonical: "AAIi", tier: .funs, meaning: "Anonymous Ascension Identification — emergency identity token enabling 911 operators / first responders to access medical info quickly."),
+        A3odexEntry(token: "AAid", canonical: "AAid", tier: .funs, meaning: "Anonymous Ascension Identifier — 4-char shorthand tag paired with AAIi emergency identity lookup (default: Ab2p^a00z)."),
 
         // 5c FUNCs
         A3odexEntry(token: "N0rma", canonical: "Norma", tier: .funcs, meaning: "Internal-zero leet MUNSC for Norma in Chamber Luncheon logs."),

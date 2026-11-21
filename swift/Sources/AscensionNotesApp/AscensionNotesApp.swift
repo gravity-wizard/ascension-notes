@@ -153,6 +153,20 @@ struct AscensionNotesApp: App {
                 }
                 .keyboardShortcut("z", modifiers: [.command, .option])
             }
+            CommandGroup(after: .pasteboard) {
+                Button("Repeat Last Emoji (\(store.lastInsertedEmoji))") {
+                    store.repeatLastEmoji()
+                }
+                .keyboardShortcut("d", modifiers: .command)
+
+                Menu("Insert Favorite Emoji") {
+                    ForEach(["🔻🔻", "😎", "🐸", "🐬", "🗝️", "🪿", "🆒"], id: \.self) { emoji in
+                        Button(emoji) {
+                            store.setFavoriteEmojiAndInsert(emoji)
+                        }
+                    }
+                }
+            }
             CommandGroup(after: .textFormatting) {
                 Button("Grow Selected Text") {
                     #if os(macOS)
@@ -682,11 +696,6 @@ struct AscensionNotesRootView: View {
                             .padding(.horizontal, 24)
                             .padding(.bottom, 12)
                     }
-
-                    if let target = store.cursorSpellTarget, target.noteID == note.id {
-                        Divider()
-                        cursorSpellActionStrip(target: target)
-                    }
                 } else {
                     let titleBinding = Binding(
                         get: { store.selectedNote?.derivedTitle ?? "" },
@@ -768,18 +777,55 @@ struct AscensionNotesRootView: View {
                     }
                 }
 
-                // Bottom selectable Jesus Clock & clickable View AXIF Data bar
+                // Bottom selectable Jesus Clock, AAid badge, Repeat Emoji, and clickable View AXIF Data bar
                 Divider()
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
                     Text(note.ownerAcode9)
                         .font(.caption.monospaced().weight(.semibold))
                         .foregroundStyle(notesGold)
                         .textSelection(.enabled)
-                    if let doc = note.compiledDocument(urlSafeDash: store.urlSafeDash, rules: store.customRules) {
-                        Text("• \(doc.axif.munscCount) AXIF token(s)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+
+                    let aaid = note.authorAAid ?? store.authorAAid
+                    Text("• AAid: \(aaid)")
+                        .font(.caption.monospaced().weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .help("AAIi: Anonymous Ascension Identification for emergency / 911 / medical lookup")
+
+                    if let target = store.cursorSpellTarget, target.noteID == note.id {
+                        Divider().frame(height: 14)
+                        cursorSpellInlineActions(target: target)
+                    } else {
+                        Divider().frame(height: 14)
+                        HStack(spacing: 4) {
+                            Button {
+                                store.repeatLastEmoji()
+                            } label: {
+                                Label("Repeat \(store.lastInsertedEmoji) (Cmd+D)", systemImage: "arrow.down.to.line")
+                                    .font(.caption2.weight(.medium))
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .help("Repeat last inserted emoji (Cmd+D) — default DownDittos 🔻🔻")
+
+                            Menu {
+                                ForEach(["🔻🔻", "😎", "🐸", "🐬", "🗝️", "🪿", "🆒"], id: \.self) { emoji in
+                                    Button(emoji) {
+                                        store.setFavoriteEmojiAndInsert(emoji)
+                                    }
+                                }
+                            } label: {
+                                Text(store.lastInsertedEmoji)
+                                    .font(.caption2)
+                            }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
+                            .help("Quick Favorite Emoji Picker")
+                        }
                     }
+
+                    Spacer()
+
                     HStack(spacing: 4) {
                         Text("• Clock:")
                             .font(.caption)
@@ -794,7 +840,7 @@ struct AscensionNotesRootView: View {
                                 .foregroundStyle(.orange)
                         }
                     }
-                    Spacer()
+
                     Button {
                         store.showInspector.toggle()
                     } label: {
@@ -807,8 +853,9 @@ struct AscensionNotesRootView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                 }
+                .frame(minHeight: 32)
                 .padding(.horizontal, 16)
-                .padding(.vertical, 6)
+                .padding(.vertical, 4)
                 .background(Color.secondary.opacity(0.05))
             }
             .navigationTitle("")
@@ -1062,6 +1109,86 @@ struct AscensionNotesRootView: View {
         _ = store.spellcheckRevision
         let (bodyClean, _) = cleanViewBodySlice(for: note)
         return SpellcheckHelper.findIssues(in: bodyClean)
+    }
+
+    private func cursorSpellInlineActions(target: CursorSpellTarget) -> some View {
+        HStack(spacing: 6) {
+            Text(target.word)
+                .font(.caption2.monospaced().bold())
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+                .background((target.isGrammarIs ? Color.blue : Color.red).opacity(0.14))
+                .foregroundStyle(target.isGrammarIs ? .blue : .red)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+
+            if target.isGrammarIs {
+                Button {
+                    store.applyAppendIS5(
+                        token: target.word,
+                        location: target.rangeLocation,
+                        length: target.rangeLength
+                    )
+                } label: {
+                    Text("→ is5")
+                        .font(.caption2.weight(.medium))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(notesGold)
+                .controlSize(.mini)
+
+                Button {
+                    store.applyAppendII(
+                        token: target.word,
+                        location: target.rangeLocation,
+                        length: target.rangeLength
+                    )
+                } label: {
+                    Text("+ii")
+                        .font(.caption2)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            } else {
+                if let suggestion = target.skipVowelsSuggestion, target.skipVowelsIsExact {
+                    Button {
+                        _ = store.addSkipVowelsRule(token: target.word, normalized: suggestion)
+                    } label: {
+                        Text("→ \(suggestion)")
+                            .font(.caption2.weight(.medium))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(notesGold)
+                    .controlSize(.mini)
+                }
+
+                Button {
+                    store.openSkipVowelsPrompt(
+                        token: target.word,
+                        rangeLocation: target.rangeLocation,
+                        rangeLength: target.rangeLength
+                    )
+                } label: {
+                    Text("Rule...")
+                        .font(.caption2)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+
+                let iiTarget = VerificationTagHelper.appendII(to: target.word)
+                Button {
+                    store.applyAppendII(
+                        token: target.word,
+                        location: target.rangeLocation,
+                        length: target.rangeLength
+                    )
+                } label: {
+                    Text(iiTarget == target.word ? "Verify (ii)" : "+ii")
+                        .font(.caption2)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            }
+        }
     }
 
     private func cursorSpellActionStrip(target: CursorSpellTarget) -> some View {

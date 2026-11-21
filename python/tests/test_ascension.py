@@ -473,9 +473,10 @@ class SkipVowelsAndAttachmentTests(unittest.TestCase):
         md = note.export_markdown(include_frontmatter=True, include_axif_footer=True)
         self.assertIn('title: "Meeting with NormA"', md)
         self.assertIn('acode9: "Ab2p^a40z"', md)
+        self.assertIn('aaid: "Ab2p^a00z"', md)
         self.assertIn("![TestChart.png](attachments/TestChart.png)", md)
         self.assertIn("Norma meeting at SLC", md)
-        self.assertIn("<!-- AXIF: Ab2p^a40z | Clock:", md)
+        self.assertIn("<!-- AXIF: Ab2p^a40z | AAid: Ab2p^a00z | Clock:", md)
 
         # Raw text mode
         md_raw = note.export_markdown(include_frontmatter=False, include_axif_footer=False, use_raw_text=True)

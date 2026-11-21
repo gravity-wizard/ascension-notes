@@ -424,6 +424,7 @@ class AscensionNote:
     def export_markdown(
         self,
         *,
+        author_aaid: str = "Ab2p^a00z",
         include_frontmatter: bool = True,
         include_axif_footer: bool = True,
         use_raw_text: bool = False,
@@ -433,10 +434,12 @@ class AscensionNote:
 
         if include_frontmatter:
             safe_title = (self.title or "Ascension Note").strip().replace('"', '\\"')
+            aaid_line = f'\naaid: "{author_aaid}"' if author_aaid else ""
             parts.append(
                 f"---\n"
                 f'title: "{safe_title}"\n'
-                f'acode9: "{self.owner_acode9}"\n'
+                f'acode9: "{self.owner_acode9}"'
+                f"{aaid_line}\n"
                 f'jesus_clock: "{self.axif.jesus_clock}"\n'
                 f"munsc_count: {self.axif.munsc_count}\n"
                 f'axif_version: "{self.axif.version}"\n'
@@ -453,8 +456,9 @@ class AscensionNote:
         if include_axif_footer:
             compact_json = self.axif.to_json(indent=None)
             payload = base64.b64encode(compact_json.encode("utf-8")).decode("ascii")
+            aaid_seg = f" | AAid: {author_aaid}" if author_aaid else ""
             parts.append(
-                f"<!-- AXIF: {self.owner_acode9} | Clock: {self.axif.jesus_clock} | Payload: {payload} -->"
+                f"<!-- AXIF: {self.owner_acode9}{aaid_seg} | Clock: {self.axif.jesus_clock} | Payload: {payload} -->"
             )
 
         return "\n\n".join(parts)
