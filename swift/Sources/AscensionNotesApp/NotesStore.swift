@@ -304,9 +304,16 @@ final class NotesStore {
 
     var lastEmojiInsertionRecord: EmojiInsertionRecord? = nil
 
-    static let starterRecentEmojis: [String] = ["🔻🔻", "🐇", "🪿", "😎", "🐸", "🐬", "🗝️", "🆒"]
+    static let starterRecentEmojis: [String] = ["🔻🔻", "🔺🔺", "🐇", "🪿", "😎", "🐸", "🐬", "🗝️", "🆒"]
     var recentEmojis: [String] = starterRecentEmojis
     var recentEmojiCycleIndex: Int = 0
+
+    static func normalizeDitto(_ emoji: String) -> String {
+        let clean = emoji.trimmingCharacters(in: .whitespacesAndNewlines)
+        if clean == "🔺" { return "🔺🔺" }
+        if clean == "🔻" { return "🔻🔻" }
+        return clean
+    }
 
     var viewMode: ViewLayerMode = .edit
     var showFindBar: Bool = false
@@ -343,17 +350,18 @@ final class NotesStore {
 
     func recordEmojiInsertion(location: Int, emoji: String) {
         guard let id = selectedNoteID else { return }
+        let clean = Self.normalizeDitto(emoji)
         lastEmojiInsertionRecord = EmojiInsertionRecord(
             noteID: id,
             location: location,
-            emoji: emoji,
+            emoji: clean,
             timestamp: Date()
         )
-        registerRecentEmoji(emoji)
+        registerRecentEmoji(clean)
     }
 
     func registerRecentEmoji(_ emoji: String) {
-        let clean = emoji.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clean = Self.normalizeDitto(emoji)
         guard !clean.isEmpty else { return }
         if let existingIdx = recentEmojis.firstIndex(of: clean) {
             recentEmojis.remove(at: existingIdx)
@@ -370,7 +378,7 @@ final class NotesStore {
     }
 
     func preemptRecentEmoji(_ emoji: String) {
-        let clean = emoji.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clean = Self.normalizeDitto(emoji)
         guard !clean.isEmpty else { return }
         registerRecentEmoji(clean)
         lastInsertedEmoji = clean
@@ -381,7 +389,7 @@ final class NotesStore {
         if viewMode != .edit {
             viewMode = .edit
         }
-        let snippet = lastInsertedEmoji.isEmpty ? "🔻🔻" : lastInsertedEmoji
+        let snippet = Self.normalizeDitto(lastInsertedEmoji.isEmpty ? "🔻🔻" : lastInsertedEmoji)
         if let handler = activeTextViewActionHandler, handler(.insertText(snippet)) {
             return
         }
@@ -421,8 +429,9 @@ final class NotesStore {
     }
 
     func setFavoriteEmojiAndInsert(_ emoji: String) {
-        lastInsertedEmoji = emoji
-        if let idx = recentEmojis.firstIndex(of: emoji) {
+        let clean = Self.normalizeDitto(emoji)
+        lastInsertedEmoji = clean
+        if let idx = recentEmojis.firstIndex(of: clean) {
             recentEmojiCycleIndex = idx
         }
         repeatLastEmoji()
@@ -1067,11 +1076,17 @@ final class NotesStore {
     }
 
     func harvestRecentEmojis(from text: String) {
+        if text.contains("🔻🔻") && !recentEmojis.contains("🔻🔻") {
+            recentEmojis.append("🔻🔻")
+        }
+        if text.contains("🔺🔺") && !recentEmojis.contains("🔺🔺") {
+            recentEmojis.append("🔺🔺")
+        }
         for char in text {
             for scalar in char.unicodeScalars {
                 if scalar.properties.isEmoji && (scalar.properties.isEmojiPresentation || scalar.value > 0x2388) {
                     let s = String(char)
-                    if s != "🔻" && !recentEmojis.contains(s) {
+                    if s != "🔻" && s != "🔺" && !recentEmojis.contains(s) {
                         recentEmojis.append(s)
                     }
                     break
@@ -1585,11 +1600,17 @@ final class NotesStore {
     func harvestAscenderRecentEmojis() {
         var found: [String] = []
         for note in notes.prefix(40) {
+            if note.rawText.contains("🔻🔻") && !found.contains("🔻🔻") {
+                found.append("🔻🔻")
+            }
+            if note.rawText.contains("🔺🔺") && !found.contains("🔺🔺") {
+                found.append("🔺🔺")
+            }
             for char in note.rawText {
                 for scalar in char.unicodeScalars {
                     if scalar.properties.isEmoji && (scalar.properties.isEmojiPresentation || scalar.value > 0x2388) {
                         let s = String(char)
-                        if s != "🔻" && !found.contains(s) {
+                        if s != "🔻" && s != "🔺" && !found.contains(s) {
                             found.append(s)
                         }
                         break

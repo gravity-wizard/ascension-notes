@@ -79,7 +79,8 @@ struct HelpGuideView: View {
                     icon: "face.smiling",
                     title: "Repeat Emoji (Cmd + D) & AAid (Emergency Medical Search Keyword)",
                     bullets: [
-                        "Repeat / Multiply Emoji (Cmd + D): Multiplies the active emoji at the cursor (defaults to 🔻🔻 DownDittos, e.g. 🔻🔻🔻🔻). Press Cmd + Shift + D to cycle recent emojis used by an Ascender (including the rabbit 🐇) to multiply like rabbits!",
+                        "UpDittos (🔺🔺) & DownDittos (🔻🔻): 'Click once, get second one free'—inserting, typing, or clicking either triangle automatically doubles into ditto pairs! Hit Cmd + D to multiply them (🔺🔺🔺🔺, 🔻🔻🔻🔻).",
+                        "Multiply Like Rabbits (Cmd + D & Cmd + Shift + D): Multiplies the active emoji at the cursor. Press Cmd + Shift + D to cycle recent emojis used by an Ascender (including the rabbit 🐇) to multiply like rabbits!",
                         "AAid (Ab2p^a00z): Permanent Anonymous Ascension Identifier locked to spy. Conceived as a cross-platform identifier & search keyword that family members can share with 911 / first responders for rapid medical info lookup for incapacitated loved ones.",
                         "Stabilized Bottom Bar: Displays your Acode9, AAid, and live Jesus Clock while keeping inline spell check actions stationary so mouse clicks never cause text to jump."
                     ]

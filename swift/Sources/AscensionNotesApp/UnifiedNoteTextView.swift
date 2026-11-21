@@ -278,19 +278,20 @@ struct UnifiedNoteTextView: NSViewRepresentable {
 
                 case .insertText(let snippet):
                     tv.window?.makeFirstResponder(tv)
+                    let actualSnippet = NotesStore.normalizeDitto(snippet)
                     let sel = tv.selectedRange()
                     let currentNS = tv.string as NSString
                     let safeLoc = sel.location == NSNotFound ? currentNS.length : min(sel.location, currentNS.length)
                     let safeLen = sel.location == NSNotFound ? 0 : min(sel.length, currentNS.length - safeLoc)
                     let targetRange = NSRange(location: safeLoc, length: safeLen)
-                    if tv.shouldChangeText(in: targetRange, replacementString: snippet) {
-                        tv.replaceCharacters(in: targetRange, with: snippet)
+                    if tv.shouldChangeText(in: targetRange, replacementString: actualSnippet) {
+                        tv.replaceCharacters(in: targetRange, with: actualSnippet)
                         tv.didChangeText()
                     } else {
-                        tv.insertText(snippet, replacementRange: targetRange)
+                        tv.insertText(actualSnippet, replacementRange: targetRange)
                     }
-                    self.store.recordEmojiInsertion(location: safeLoc, emoji: snippet)
-                    let newPos = safeLoc + (snippet as NSString).length
+                    self.store.recordEmojiInsertion(location: safeLoc, emoji: actualSnippet)
+                    let newPos = safeLoc + (actualSnippet as NSString).length
                     tv.setSelectedRange(NSRange(location: newPos, length: 0))
                     tv.window?.makeFirstResponder(tv)
                     return true
@@ -322,22 +323,55 @@ struct UnifiedNoteTextView: NSViewRepresentable {
 
             if sel.location >= 4 {
                 let fourRange = NSRange(location: sel.location - 4, length: 4)
-                if text.substring(with: fourRange) == "🔻🔻" {
+                let sub4 = text.substring(with: fourRange)
+                if sub4 == "🔻🔻" {
                     store.preemptRecentEmoji("🔻🔻")
+                    return
+                }
+                if sub4 == "🔺🔺" {
+                    store.preemptRecentEmoji("🔺🔺")
                     return
                 }
             }
 
             let charRange = text.rangeOfComposedCharacterSequence(at: sel.location - 1)
             let snippet = text.substring(with: charRange)
+            if snippet == "🔺" {
+                store.preemptRecentEmoji("🔺🔺")
+                return
+            }
+            if snippet == "🔻" {
+                store.preemptRecentEmoji("🔻🔻")
+                return
+            }
             if Self.isEmojiString(snippet) {
                 store.preemptRecentEmoji(snippet)
                 return
             }
 
             if sel.location < text.length {
+                if sel.location + 4 <= text.length {
+                    let forwardFour = NSRange(location: sel.location, length: 4)
+                    let fsub4 = text.substring(with: forwardFour)
+                    if fsub4 == "🔻🔻" {
+                        store.preemptRecentEmoji("🔻🔻")
+                        return
+                    }
+                    if fsub4 == "🔺🔺" {
+                        store.preemptRecentEmoji("🔺🔺")
+                        return
+                    }
+                }
                 let forwardRange = text.rangeOfComposedCharacterSequence(at: sel.location)
                 let forwardSnippet = text.substring(with: forwardRange)
+                if forwardSnippet == "🔺" {
+                    store.preemptRecentEmoji("🔺🔺")
+                    return
+                }
+                if forwardSnippet == "🔻" {
+                    store.preemptRecentEmoji("🔻🔻")
+                    return
+                }
                 if Self.isEmojiString(forwardSnippet) {
                     store.preemptRecentEmoji(forwardSnippet)
                 }
@@ -807,6 +841,25 @@ final class AscensionNSTextView: NSTextView {
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         registerForDraggedTypes([.fileURL, .png, .tiff, .URL])
+    }
+
+    // MARK: - Ditto Pairs ("Click once, get second one free")
+    override func insertText(_ string: Any, replacementRange: NSRange) {
+        var strToInsert: Any = string
+        if let s = string as? String {
+            if s == "🔺" {
+                strToInsert = "🔺🔺"
+            } else if s == "🔻" {
+                strToInsert = "🔻🔻"
+            }
+        } else if let attr = string as? NSAttributedString {
+            if attr.string == "🔺" {
+                strToInsert = "🔺🔺"
+            } else if attr.string == "🔻" {
+                strToInsert = "🔻🔻"
+            }
+        }
+        super.insertText(strToInsert, replacementRange: replacementRange)
     }
 
     func ensureFullLayoutAndFrame() {
