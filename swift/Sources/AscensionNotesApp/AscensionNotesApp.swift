@@ -790,7 +790,7 @@ struct AscensionNotesRootView: View {
                         .font(.caption.monospaced().weight(.medium))
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
-                        .help("AAIi: Anonymous Ascension Identification for emergency / 911 / medical lookup")
+                        .help("AAid: Anonymous Ascension Identifier — cross-platform identifier & search keyword for incapacitated loved ones (shareable with 911 / first responders)")
 
                     if let target = store.cursorSpellTarget, target.noteID == note.id {
                         Divider().frame(height: 14)
