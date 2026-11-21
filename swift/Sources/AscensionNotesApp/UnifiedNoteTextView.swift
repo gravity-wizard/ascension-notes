@@ -194,92 +194,89 @@ struct UnifiedNoteTextView: NSViewRepresentable {
             }
         }
 
-        nonisolated func textView(
-            _ view: NSTextView,
-            menu: NSMenu,
-            for event: NSEvent,
+        func enrichContextMenu(
+            _ baseMenu: NSMenu,
+            for view: NSTextView,
             at charIndex: Int
-        ) -> NSMenu? {
-            MainActor.assumeIsolated {
-                let enriched = (menu.copy() as? NSMenu) ?? NSMenu()
-                enriched.insertItem(.separator(), at: 0)
+        ) -> NSMenu {
+            let enriched = (baseMenu.copy() as? NSMenu) ?? NSMenu()
+            enriched.insertItem(.separator(), at: 0)
 
-                // Folding submenu
-                let foldMenu = NSMenu(title: "Folding")
-                let sel = view.selectedRange()
-                if sel.length > 0 {
-                    let foldItem = NSMenuItem(
-                        title: "Fold Selection (Shrink Block)",
-                        action: #selector(AscensionNSTextView.foldSelectedBlock(_:)),
-                        keyEquivalent: ""
-                    )
-                    foldItem.target = view
-                    foldMenu.addItem(foldItem)
-                }
-
-                if let marker = markerAt(index: charIndex, in: view.string) {
-                    let unfoldItem = NSMenuItem(
-                        title: "Unfold Block (Expand)",
-                        action: #selector(AscensionNSTextView.unfoldHoveredBlock(_:)),
-                        keyEquivalent: ""
-                    )
-                    unfoldItem.representedObject = marker
-                    unfoldItem.target = view
-                    foldMenu.addItem(unfoldItem)
-                }
-
-                if !(store.selectedNote?.foldedBlocks.isEmpty ?? true) {
-                    let unfoldAll = NSMenuItem(
-                        title: "Unfold All Blocks",
-                        action: #selector(AscensionNSTextView.unfoldAllBlocks(_:)),
-                        keyEquivalent: ""
-                    )
-                    unfoldAll.target = view
-                    foldMenu.addItem(unfoldAll)
-                }
-
-                foldMenu.addItem(.separator())
-                let expandText = NSMenuItem(
-                    title: "Expand Text Size (Cmd +)",
-                    action: #selector(AscensionNSTextView.expandTextSize(_:)),
+            // Folding submenu
+            let foldMenu = NSMenu(title: "Folding")
+            let sel = view.selectedRange()
+            if sel.length > 0 {
+                let foldItem = NSMenuItem(
+                    title: "Fold Selection (Shrink Block)",
+                    action: #selector(AscensionNSTextView.foldSelectedBlock(_:)),
                     keyEquivalent: ""
                 )
-                expandText.target = view
-                foldMenu.addItem(expandText)
-
-                let shrinkText = NSMenuItem(
-                    title: "Shrink Text Size (Cmd -)",
-                    action: #selector(AscensionNSTextView.shrinkTextSize(_:)),
-                    keyEquivalent: ""
-                )
-                shrinkText.target = view
-                foldMenu.addItem(shrinkText)
-
-                let foldParent = NSMenuItem(title: "Folding & Size", action: nil, keyEquivalent: "")
-                foldParent.submenu = foldMenu
-                enriched.insertItem(foldParent, at: 0)
-
-                // Format submenu
-                let fmtMenu = NSMenu(title: "Format")
-                let fmtItems: [(String, Selector)] = [
-                    ("Bold (**text**)", #selector(AscensionNSTextView.wrapBold(_:))),
-                    ("Italic (*text*)", #selector(AscensionNSTextView.wrapItalic(_:))),
-                    ("Inline Code (`text`)", #selector(AscensionNSTextView.wrapCode(_:))),
-                    ("Heading (## )", #selector(AscensionNSTextView.prefixHeading(_:))),
-                    ("Bullet List (• )", #selector(AscensionNSTextView.prefixBullet(_:))),
-                ]
-                for (title, selAction) in fmtItems {
-                    let item = NSMenuItem(title: title, action: selAction, keyEquivalent: "")
-                    item.target = view
-                    fmtMenu.addItem(item)
-                }
-
-                let fmtParent = NSMenuItem(title: "Format Block", action: nil, keyEquivalent: "")
-                fmtParent.submenu = fmtMenu
-                enriched.insertItem(fmtParent, at: 0)
-
-                return enriched
+                foldItem.target = view
+                foldMenu.addItem(foldItem)
             }
+
+            if let marker = markerAt(index: charIndex, in: view.string) {
+                let unfoldItem = NSMenuItem(
+                    title: "Unfold Block (Expand)",
+                    action: #selector(AscensionNSTextView.unfoldHoveredBlock(_:)),
+                    keyEquivalent: ""
+                )
+                unfoldItem.representedObject = marker
+                unfoldItem.target = view
+                foldMenu.addItem(unfoldItem)
+            }
+
+            if !(store.selectedNote?.foldedBlocks.isEmpty ?? true) {
+                let unfoldAll = NSMenuItem(
+                    title: "Unfold All Blocks",
+                    action: #selector(AscensionNSTextView.unfoldAllBlocks(_:)),
+                    keyEquivalent: ""
+                )
+                unfoldAll.target = view
+                foldMenu.addItem(unfoldAll)
+            }
+
+            foldMenu.addItem(.separator())
+            let expandText = NSMenuItem(
+                title: "Expand Text Size (Cmd +)",
+                action: #selector(AscensionNSTextView.expandTextSize(_:)),
+                keyEquivalent: ""
+            )
+            expandText.target = view
+            foldMenu.addItem(expandText)
+
+            let shrinkText = NSMenuItem(
+                title: "Shrink Text Size (Cmd -)",
+                action: #selector(AscensionNSTextView.shrinkTextSize(_:)),
+                keyEquivalent: ""
+            )
+            shrinkText.target = view
+            foldMenu.addItem(shrinkText)
+
+            let foldParent = NSMenuItem(title: "Folding & Size", action: nil, keyEquivalent: "")
+            foldParent.submenu = foldMenu
+            enriched.insertItem(foldParent, at: 0)
+
+            // Format submenu
+            let fmtMenu = NSMenu(title: "Format")
+            let fmtItems: [(String, Selector)] = [
+                ("Bold (**text**)", #selector(AscensionNSTextView.wrapBold(_:))),
+                ("Italic (*text*)", #selector(AscensionNSTextView.wrapItalic(_:))),
+                ("Inline Code (`text`)", #selector(AscensionNSTextView.wrapCode(_:))),
+                ("Heading (## )", #selector(AscensionNSTextView.prefixHeading(_:))),
+                ("Bullet List (• )", #selector(AscensionNSTextView.prefixBullet(_:))),
+            ]
+            for (title, selAction) in fmtItems {
+                let item = NSMenuItem(title: title, action: selAction, keyEquivalent: "")
+                item.target = view
+                fmtMenu.addItem(item)
+            }
+
+            let fmtParent = NSMenuItem(title: "Format Block", action: nil, keyEquivalent: "")
+            fmtParent.submenu = fmtMenu
+            enriched.insertItem(fmtParent, at: 0)
+
+            return enriched
         }
 
         private func markerAt(index: Int, in text: String) -> String? {
@@ -323,6 +320,13 @@ struct UnifiedNoteTextView: NSViewRepresentable {
 
 final class AscensionNSTextView: NSTextView {
     weak var coordinator: UnifiedNoteTextView.Coordinator?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let baseMenu = super.menu(for: event) ?? NSMenu()
+        let pt = convert(event.locationInWindow, from: nil)
+        let charIndex = characterIndexForInsertion(at: pt)
+        return coordinator?.enrichContextMenu(baseMenu, for: self, at: charIndex) ?? baseMenu
+    }
 
     @objc func wrapBold(_ sender: Any?) { wrapSelection(prefix: "**", suffix: "**") }
     @objc func wrapItalic(_ sender: Any?) { wrapSelection(prefix: "*", suffix: "*") }
