@@ -93,6 +93,48 @@ def _compile_pattern(
     return re.compile(body, flags)
 
 
+@dataclass(frozen=True, slots=True)
+class NoteAttachment:
+    """Lossless PNG attachment metadata compatible with Swift StoredNote.attachments."""
+
+    id: str
+    filename: str
+    relative_path: str
+    pixel_width: int
+    pixel_height: int
+    created_at: str = ""
+
+    @property
+    def short_id(self) -> str:
+        return self.id[:4].lower()
+
+    @property
+    def marker_text(self) -> str:
+        safe_name = self.filename.replace("]", ")").replace("\n", " ")
+        return f"▸[Image: {safe_name} #{self.short_id}]"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "filename": self.filename,
+            "relative_path": self.relative_path,
+            "pixel_width": self.pixel_width,
+            "pixel_height": self.pixel_height,
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NoteAttachment:
+        return cls(
+            id=str(data["id"]),
+            filename=str(data["filename"]),
+            relative_path=str(data.get("relative_path", data.get("relativePath", ""))),
+            pixel_width=int(data.get("pixel_width", data.get("pixelWidth", 1))),
+            pixel_height=int(data.get("pixel_height", data.get("pixelHeight", 1))),
+            created_at=str(data.get("created_at", data.get("createdAt", ""))),
+        )
+
+
 class AscensionNote:
     """A note storing raw MUNSC text, normalized text, owner Acode9, and AXIF index."""
 
@@ -109,6 +151,7 @@ class AscensionNote:
         canonical_forms: Iterable[str] = DEFAULT_CANONICAL_FORMS,
         protected_tokens: Iterable[str] = DEFAULT_PROTECTED_TOKENS,
         auto_detect: bool = True,
+        attachments: Sequence[NoteAttachment] = (),
     ) -> None:
         self.title = title
         self.raw_text = raw_text
@@ -120,6 +163,7 @@ class AscensionNote:
         self.canonical_forms = set(canonical_forms)
         self.protected_tokens = set(protected_tokens)
         self.auto_detect = auto_detect
+        self.attachments: list[NoteAttachment] = list(attachments)
 
     @classmethod
     def create(
@@ -133,6 +177,7 @@ class AscensionNote:
         protected_tokens: Iterable[str] = DEFAULT_PROTECTED_TOKENS,
         auto_detect: bool = True,
         timestamp: TimestampLike = None,
+        attachments: Sequence[NoteAttachment] = (),
     ) -> AscensionNote:
         acode = owner_acode9 or generate_acode9(timestamp, mode="good1a")
         validation = validate_acode9(acode, allow_dash=True, filter_profanity=False)
@@ -161,6 +206,7 @@ class AscensionNote:
             canonical_forms=canon_set,
             protected_tokens=prot_set,
             auto_detect=auto_detect,
+            attachments=attachments,
         )
 
     def update_raw_text(
@@ -347,6 +393,7 @@ class AscensionNote:
             "canonical_forms": sorted(self.canonical_forms),
             "protected_tokens": sorted(self.protected_tokens),
             "auto_detect": self.auto_detect,
+            "attachments": [att.to_dict() for att in self.attachments],
         }
 
     def to_json(self, *, indent: int | None = 2) -> str:
@@ -378,6 +425,9 @@ class AscensionNote:
     def from_dict(cls, data: dict[str, Any]) -> AscensionNote:
         axif_data = data["axif"]
         rules = [MUNSCRule.from_dict(r) for r in axif_data.get("rules", [])]
+        attachments = [
+            NoteAttachment.from_dict(att) for att in data.get("attachments", [])
+        ]
         return cls.create(
             raw_text=str(data["raw_text"]),
             owner_acode9=str(data["owner_acode9"]),
@@ -386,6 +436,7 @@ class AscensionNote:
             canonical_forms=data.get("canonical_forms", DEFAULT_CANONICAL_FORMS),
             protected_tokens=data.get("protected_tokens", DEFAULT_PROTECTED_TOKENS),
             auto_detect=bool(data.get("auto_detect", True)),
+            attachments=attachments,
         )
 
 
@@ -499,6 +550,15 @@ class AscensionNotesStore:
         if self.sync_folder is not None:
             self.save_custom_rules(self.sync_folder)
         return rule
+
+    def add_skip_vowels_rule(self, token: str, normalized: str) -> MUNSCRule:
+        """Add and verify a Skip Vowels MUNSC rule with description 'Skip vowels verified'."""
+        return self.add_custom_rule(
+            token,
+            normalized,
+            description="Skip vowels verified",
+            is_regex=False,
+        )
 
     def delete_custom_rule(self, name: str) -> bool:
         before = len(self.custom_rules)

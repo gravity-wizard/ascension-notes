@@ -62,6 +62,42 @@ public struct FontSizeSpan: Codable, Hashable, Sendable {
     }
 }
 
+public struct NoteAttachment: Codable, Identifiable, Hashable, Sendable {
+    public var id: UUID
+    public var filename: String
+    public var relativePath: String
+    public var pixelWidth: Int
+    public var pixelHeight: Int
+    public var createdAt: Date
+
+    public var shortID: String {
+        String(id.uuidString.prefix(4)).lowercased()
+    }
+
+    public var markerText: String {
+        let safeName = filename
+            .replacingOccurrences(of: "]", with: ")")
+            .replacingOccurrences(of: "\n", with: " ")
+        return "▸[Image: \(safeName) #\(shortID)]"
+    }
+
+    public init(
+        id: UUID = UUID(),
+        filename: String,
+        relativePath: String,
+        pixelWidth: Int,
+        pixelHeight: Int,
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.filename = filename
+        self.relativePath = relativePath
+        self.pixelWidth = pixelWidth
+        self.pixelHeight = pixelHeight
+        self.createdAt = createdAt
+    }
+}
+
 public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
     public var id: UUID
     public var rawText: String
@@ -72,9 +108,10 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
     public var updatedAt: Date
     public var foldedBlocks: [String: String]
     public var fontSpans: [FontSizeSpan]
+    public var attachments: [NoteAttachment]
 
     enum CodingKeys: String, CodingKey {
-        case id, rawText, ownerAcode9, folder, isPinned, createdAt, updatedAt, foldedBlocks, fontSpans
+        case id, rawText, ownerAcode9, folder, isPinned, createdAt, updatedAt, foldedBlocks, fontSpans, attachments
     }
 
     public init(
@@ -86,7 +123,8 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
         foldedBlocks: [String: String] = [:],
-        fontSpans: [FontSizeSpan] = []
+        fontSpans: [FontSizeSpan] = [],
+        attachments: [NoteAttachment] = []
     ) {
         self.id = id
         self.rawText = rawText
@@ -97,6 +135,7 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
         self.updatedAt = updatedAt
         self.foldedBlocks = foldedBlocks
         self.fontSpans = fontSpans
+        self.attachments = attachments
     }
 
     public init(from decoder: Decoder) throws {
@@ -110,6 +149,7 @@ public struct StoredNote: Codable, Identifiable, Hashable, Sendable {
         updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
         foldedBlocks = try c.decodeIfPresent([String: String].self, forKey: .foldedBlocks) ?? [:]
         fontSpans = try c.decodeIfPresent([FontSizeSpan].self, forKey: .fontSpans) ?? []
+        attachments = try c.decodeIfPresent([NoteAttachment].self, forKey: .attachments) ?? []
     }
 
     public var derivedTitle: String {
@@ -181,6 +221,54 @@ public struct AXIFImportResult: Sendable {
     public let importedRulesCount: Int
 }
 
+public struct CursorSpellTarget: Equatable, Sendable {
+    public let noteID: UUID
+    public let word: String
+    public let rangeLocation: Int
+    public let rangeLength: Int
+    public let isMisspelled: Bool
+    public let isGrammarIs: Bool
+    public let guesses: [String]
+    public let skipVowelsSuggestion: String?
+    public let skipVowelsIsExact: Bool
+}
+
+public struct SkipVowelsPromptRequest: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public let noteID: UUID
+    public let token: String
+    public let suggestedNormalized: String
+    public let rangeLocation: Int
+    public let rangeLength: Int
+
+    public init(
+        id: UUID = UUID(),
+        noteID: UUID,
+        token: String,
+        suggestedNormalized: String,
+        rangeLocation: Int,
+        rangeLength: Int
+    ) {
+        self.id = id
+        self.noteID = noteID
+        self.token = token
+        self.suggestedNormalized = suggestedNormalized
+        self.rangeLocation = rangeLocation
+        self.rangeLength = rangeLength
+    }
+}
+
+public struct RetinaLightboxRequest: Identifiable, Equatable, Sendable {
+    public var id: UUID { attachment.id }
+    public let noteID: UUID
+    public let attachment: NoteAttachment
+}
+
+public enum TextViewQuickAction: Sendable {
+    case replaceRange(location: Int, length: Int, with: String, learnWord: String?)
+    case learnOnly(String)
+}
+
 @MainActor
 @Observable
 final class NotesStore {
@@ -209,6 +297,11 @@ final class NotesStore {
     var spellcheckCleanView: Bool = true
     var spellcheckRevision: Int = 0
     var editorFontSize: Double = 15.0
+
+    var cursorSpellTarget: CursorSpellTarget? = nil
+    var skipVowelsPrompt: SkipVowelsPromptRequest? = nil
+    var activeLightboxRequest: RetinaLightboxRequest? = nil
+    @ObservationIgnored var activeTextViewActionHandler: ((TextViewQuickAction) -> Bool)? = nil
 
     var query: String = ""
     var caseSensitive: Bool = true
@@ -381,6 +474,11 @@ final class NotesStore {
                         if fm.fileExists(atPath: src.path), !fm.fileExists(atPath: dst.path) {
                             try? fm.copyItem(at: src, to: dst)
                         }
+                    }
+                    let srcAttach = previousDir.appendingPathComponent("attachments", isDirectory: true)
+                    let dstAttach = targetDir.appendingPathComponent("attachments", isDirectory: true)
+                    if fm.fileExists(atPath: srcAttach.path), !fm.fileExists(atPath: dstAttach.path) {
+                        try? fm.copyItem(at: srcAttach, to: dstAttach)
                     }
                 }
             }
@@ -973,6 +1071,182 @@ final class NotesStore {
         spellcheckRevision += 1
     }
 
+    // MARK: - Skip Vowels, ii / is5 Quick Actions & Attachments
+
+    func suggestSkipVowels(for token: String) -> SkipVowelsSuggestion? {
+        let knownEntries: [(token: String, canonical: String)] =
+            customRules.map { ($0.pattern, $0.replacement) }
+            + a3odexEntries.map { ($0.token, $0.canonical) }
+        let extraLexicon = a3odexEntries.map(\.canonical) + customRules.map(\.replacement)
+        return SkipVowelsHelper.bestSuggestion(
+            for: token,
+            knownEntries: knownEntries,
+            extraLexicon: extraLexicon
+        )
+    }
+
+    func openSkipVowelsPrompt(token: String, rangeLocation: Int, rangeLength: Int) {
+        guard let noteID = selectedNote?.id else { return }
+        let cleanToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanToken.isEmpty else { return }
+        let suggested = suggestSkipVowels(for: cleanToken)?.normalized ?? cleanToken
+        skipVowelsPrompt = SkipVowelsPromptRequest(
+            noteID: noteID,
+            token: cleanToken,
+            suggestedNormalized: suggested,
+            rangeLocation: rangeLocation,
+            rangeLength: rangeLength
+        )
+    }
+
+    @discardableResult
+    func addSkipVowelsRule(token: String, normalized: String) -> Bool {
+        let cleanToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanNormalized = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanToken.isEmpty, !cleanNormalized.isEmpty else { return false }
+
+        applyLearnWord(token: cleanToken)
+
+        if cleanToken != cleanNormalized {
+            return addCustomRule(
+                token: cleanToken,
+                normalized: cleanNormalized,
+                description: "Skip vowels verified"
+            )
+        }
+        return true
+    }
+
+    func applyAppendII(token: String, location: Int, length: Int) {
+        let updated = VerificationTagHelper.appendII(to: token)
+        guard !updated.isEmpty else { return }
+        applyReplaceSpan(location: location, length: length, with: updated, learnWord: updated)
+    }
+
+    func applyAppendIS5(token: String, location: Int, length: Int) {
+        let updated = VerificationTagHelper.appendIS5(to: token)
+        guard !updated.isEmpty else { return }
+        applyReplaceSpan(location: location, length: length, with: updated, learnWord: updated)
+    }
+
+    func applyReplaceSpan(location: Int, length: Int, with replacement: String, learnWord: String? = nil) {
+        if let learnWord, !learnWord.isEmpty {
+            SpellcheckHelper.learnWord(learnWord)
+        }
+        if let handler = activeTextViewActionHandler,
+           handler(.replaceRange(location: location, length: length, with: replacement, learnWord: learnWord)) {
+            spellcheckRevision += 1
+            return
+        }
+
+        guard let id = selectedNote?.id,
+              let idx = notes.firstIndex(where: { $0.id == id }) else { return }
+        let ns = notes[idx].rawText as NSString
+        guard location >= 0, length >= 0, location + length <= ns.length else { return }
+        notes[idx].rawText = ns.replacingCharacters(in: NSRange(location: location, length: length), with: replacement)
+        notes[idx].updatedAt = Date()
+        cursorSpellTarget = nil
+        spellcheckRevision += 1
+        save()
+    }
+
+    func applyLearnWord(token: String) {
+        let clean = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        SpellcheckHelper.learnWord(clean)
+        _ = activeTextViewActionHandler?(.learnOnly(clean))
+        if cursorSpellTarget?.word == clean {
+            cursorSpellTarget = nil
+        }
+        spellcheckRevision += 1
+    }
+
+    func attachmentsDirectoryURL() -> URL {
+        activeSyncFolderURL.appendingPathComponent("attachments", isDirectory: true)
+    }
+
+    func attachmentFileURL(for attachment: NoteAttachment) -> URL {
+        activeSyncFolderURL.appendingPathComponent(attachment.relativePath)
+    }
+
+    func readAttachmentData(for attachment: NoteAttachment) -> Data? {
+        let targetURL = attachmentFileURL(for: attachment)
+        return withFolderAccess(activeSyncFolderURL) {
+            try? Data(contentsOf: targetURL)
+        }
+    }
+
+    @discardableResult
+    func saveImageAttachment(
+        pngData: Data,
+        filename: String,
+        pixelWidth: Int,
+        pixelHeight: Int
+    ) -> NoteAttachment? {
+        guard let id = selectedNote?.id,
+              let idx = notes.firstIndex(where: { $0.id == id }) else { return nil }
+
+        let attachmentID = UUID()
+        let relativePath = "attachments/\(attachmentID.uuidString).png"
+        let targetURL = activeSyncFolderURL.appendingPathComponent(relativePath)
+
+        var writeSucceeded = false
+        withFolderAccess(activeSyncFolderURL) {
+            let dir = attachmentsDirectoryURL()
+            do {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                try pngData.write(to: targetURL, options: .atomic)
+                writeSucceeded = true
+            } catch {
+                writeSucceeded = false
+            }
+        }
+        guard writeSucceeded else { return nil }
+
+        let cleanName = filename.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Screenshot-\(String(attachmentID.uuidString.prefix(4)).lowercased()).png"
+            : filename.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let attachment = NoteAttachment(
+            id: attachmentID,
+            filename: cleanName,
+            relativePath: relativePath,
+            pixelWidth: max(1, pixelWidth),
+            pixelHeight: max(1, pixelHeight),
+            createdAt: Date()
+        )
+        notes[idx].attachments.append(attachment)
+        notes[idx].updatedAt = Date()
+        save()
+        return attachment
+    }
+
+    func deleteAttachment(_ attachment: NoteAttachment, from noteID: UUID) {
+        guard let idx = notes.firstIndex(where: { $0.id == noteID }) else { return }
+        notes[idx].attachments.removeAll { $0.id == attachment.id }
+
+        let marker = attachment.markerText
+        if notes[idx].rawText.contains(marker) {
+            var updated = notes[idx].rawText
+                .replacingOccurrences(of: "\n\(marker)\n", with: "\n")
+                .replacingOccurrences(of: "\n\(marker)", with: "")
+                .replacingOccurrences(of: "\(marker)\n", with: "")
+                .replacingOccurrences(of: marker, with: "")
+            updated = updated.trimmingCharacters(in: CharacterSet(charactersIn: ""))
+            notes[idx].rawText = updated
+        }
+        notes[idx].updatedAt = Date()
+
+        let fileURL = attachmentFileURL(for: attachment)
+        withFolderAccess(activeSyncFolderURL) {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+        if activeLightboxRequest?.attachment.id == attachment.id {
+            activeLightboxRequest = nil
+        }
+        save()
+    }
+
     func updateSelectedFolder(_ folder: NoteFolder) {
         guard let id = selectedNote?.id,
               let idx = notes.firstIndex(where: { $0.id == id }) else { return }
@@ -1226,10 +1500,11 @@ final class NotesStore {
         return [
             StoredNote(
                 rawText: """
-                N0rma — Chamber Luncheon & Trailhead Log
-                Field note authored under Acode9 Ab2p^a40z (Jesus Clock 2p15ek).
+                N0rma — Where's Norma? Chamber & Trailhead Log
+                Field note authored under Acode9 Ab2p^a40z (Jesus Clock 2p15ek) in Anotes.
                 Met NormA at the trailhead, confirmed coordinates with Norm4, and archived Norma4 in the AXIF ledger.
-                Tip: Turn on Aa Case-Sensitive search and search NormA, Norm4, or Norma4 — or switch to Clean View!
+                WhrNrmA and WhrNrmB (skipping the vowels) are both 7-char SvnUNCs; NrmA and NrmB are 4-char FUNs; GSii and i9or1 / is5 keep search hierarchy clean without blue grammar squiggles.
+                Tip: Click or right-click any red-underlined token (WhrNrmA, NrmA, GSii, Anotes) for Skip Vowels, +ii, +is5, and Learn quick actions — or drop a Retina screenshot right into this note!
                 """,
                 ownerAcode9: "Ab2p^a40z",
                 folder: .chamberNorma,
@@ -1265,7 +1540,7 @@ final class NotesStore {
                 rawText: """
                 Reading & B00K Checklist (FUNs, FUNCs, SxUNCs, SvnUNCs)
                 - Priming the Sits-You-Weigh-Station (S1tsUW8)
-                - Solving "Were's Norma?" with N0rma and AXIF
+                - Solving "Where's Norma?" with N0rma, WhrNrmA, WhrNrmB, NrmA, NrmB, GSii, i9or1, and AXIF
                 - Reviewing 7Aunts & Slog at Formicary Castle
                 """,
                 ownerAcode9: "Ab2p^k7mz",

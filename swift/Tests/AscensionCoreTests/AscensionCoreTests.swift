@@ -163,4 +163,61 @@ final class AscensionCoreTests: XCTestCase {
         XCTAssertEqual(decodedRule.replacement, "Castle")
         XCTAssertFalse(decodedRule.isRegex)
     }
+
+    func testSkipVowelsSuggestionsAndVerificationTags() throws {
+        XCTAssertEqual(SkipVowelsHelper.consonantSkeleton("Where's Norma"), "whrnrm")
+        XCTAssertEqual(SkipVowelsHelper.consonantSkeleton("WhrNrm"), "whrnrm")
+
+        XCTAssertEqual(SkipVowelsHelper.bestSuggestion(for: "WhrNrmA")?.normalized, "Where's Norma A")
+        XCTAssertEqual(SkipVowelsHelper.bestSuggestion(for: "WhrNrmB")?.normalized, "Where's Norma B")
+        XCTAssertEqual(SkipVowelsHelper.bestSuggestion(for: "NrmA")?.normalized, "Norma A")
+        XCTAssertEqual(SkipVowelsHelper.bestSuggestion(for: "NrmB")?.normalized, "Norma B")
+        XCTAssertEqual(SkipVowelsHelper.bestSuggestion(for: "Anotes")?.normalized, "Ascension Notes")
+        XCTAssertEqual(SkipVowelsHelper.bestSuggestion(for: "GSii")?.normalized, "GSii")
+
+        // Dynamic consonant-skeleton matching against custom lexicon
+        let customSug = SkipVowelsHelper.bestSuggestion(
+            for: "JssClck",
+            extraLexicon: ["Jesus Clock"]
+        )
+        XCTAssertEqual(customSug?.normalized, "Jesus Clock")
+
+        let ruleA = SkipVowelsHelper.makeVerifiedRule(token: "WhrNrmA", normalized: "Where's Norma A")
+        XCTAssertEqual(ruleA.description, "Skip vowels verified")
+
+        let ts = try Base38Clock.decodeJesusClock("2p15ek")
+        let doc = try AXIFDocument(
+            title: "Where's Norma?",
+            rawText: "Comparing WhrNrmA and WhrNrmB with GSii and i9or1.",
+            ownerAcode9: "Ab2p^a40z",
+            rules: [
+                ruleA,
+                SkipVowelsHelper.makeVerifiedRule(token: "WhrNrmB", normalized: "Where's Norma B")
+            ],
+            timestampUnix: ts
+        )
+        XCTAssertEqual(doc.normalizedText, "Comparing Where's Norma A and Where's Norma B with GSii and i9or1.")
+
+        XCTAssertEqual(VerificationTagHelper.appendII(to: "GS"), "GSii")
+        XCTAssertEqual(VerificationTagHelper.appendII(to: "GSii"), "GSii")
+        XCTAssertEqual(VerificationTagHelper.appendIS5(to: "is"), "is5")
+        XCTAssertEqual(VerificationTagHelper.appendIS5(to: "Is"), "is5")
+        XCTAssertEqual(VerificationTagHelper.appendIS5(to: "Appending"), "Appendingis5")
+        XCTAssertEqual(VerificationTagHelper.appendIS5(to: "Appendingis5"), "Appendingis5")
+
+        XCTAssertTrue(VerificationTagHelper.isHierarchyOrVerifiedTag("i9or1"))
+        XCTAssertTrue(VerificationTagHelper.isHierarchyOrVerifiedTag("GSii"))
+        XCTAssertTrue(VerificationTagHelper.isHierarchyOrVerifiedTag("is5"))
+        XCTAssertFalse(VerificationTagHelper.isHierarchyOrVerifiedTag("is"))
+        XCTAssertFalse(VerificationTagHelper.isHierarchyOrVerifiedTag("ii"))
+
+        let docWithImage = try AXIFDocument(
+            title: "Retina",
+            rawText: "NormA screenshot:\n▸[Image: NormA.png #a1b2]",
+            ownerAcode9: "Ab2p^a40z",
+            timestampUnix: ts
+        )
+        XCTAssertEqual(docWithImage.normalizedText, "Norma screenshot:\n▸[Image: NormA.png #a1b2]")
+        XCTAssertEqual(docWithImage.axif.munscCount, 1)
+    }
 }

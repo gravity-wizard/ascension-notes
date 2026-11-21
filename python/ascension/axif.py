@@ -52,9 +52,9 @@ _LEET_CHAR_MAP: dict[str, str] = {
     "7": "t",
 }
 
-# Recognizes either a 9-char Acode9 identifier (protected) or an alphanumeric word token
+# Recognizes protected ▸[Image/Folded ...] markers, 9-char Acode9 identifiers, or alphanumeric tokens
 _TOKEN_SCAN_RE = re.compile(
-    r"A[a-z][0-9a-z|\^]{2}[\^\-][0-9a-z|\^]{4}|[A-Za-z0-9]+"
+    r"▸\[(?:Image|Folded)[^\n\]]*\]|A[a-z][0-9a-z|\^]{2}[\^\-][0-9a-z|\^]{4}|[A-Za-z0-9]+"
 )
 _TRAILING_CAP_RE = re.compile(r"^[A-Z][a-z]{2,}[A-Z]$")
 _INTERNAL_LEET_RE = re.compile(r"^[A-Za-z]+[013457][A-Za-z]+$")
@@ -287,6 +287,9 @@ def normalize_munsc_token(
     if not token:
         return None
 
+    if token.startswith("▸["):
+        return None
+
     protected = set(protected_tokens)
     if token in protected:
         return None
@@ -446,3 +449,189 @@ def compile_axif(
     )
 
     return normalized_text, metadata, segments
+
+
+_VOWELS: frozenset[str] = frozenset({"a", "e", "i", "o", "u"})
+
+BUILTIN_SKIP_VOWELS_MAPPINGS: dict[str, str] = {
+    "WhrNrmA": "Where's Norma A",
+    "WhrNrmB": "Where's Norma B",
+    "WhrNrm": "Where's Norma",
+    "NrmA": "Norma A",
+    "NrmB": "Norma B",
+    "Nrm": "Norma",
+    "Anotes": "Ascension Notes",
+    "AscNts": "Ascension Notes",
+    "GSii": "GSii",
+    "FrmryCstl": "Formicary Castle",
+}
+
+BUILTIN_SKIP_VOWELS_LEXICON: tuple[str, ...] = (
+    "Where's Norma A",
+    "Where's Norma B",
+    "Where's Norma",
+    "Norma A",
+    "Norma B",
+    "Norma",
+    "Ascension Notes",
+    "Formicary Castle",
+    "Seven Aunts",
+    "Jesus Clock",
+    "Hydrogen4",
+    "Base38",
+    "March 8 Miracle",
+    "GSii",
+)
+
+
+def consonant_skeleton(text: str, *, include_leading_vowel: bool = False) -> str:
+    """Extract lowercase consonant-and-digit skeleton for skip-vowels matching."""
+    stripped = text.replace("'s", "").replace("\u2019s", "")
+    out: list[str] = []
+    is_first_letter = True
+    for ch in stripped.lower():
+        if not (ch.isascii() and ch.isalnum()):
+            continue
+        if ch.isdigit():
+            out.append(ch)
+            is_first_letter = False
+            continue
+        if ch in _VOWELS:
+            if include_leading_vowel and is_first_letter:
+                out.append(ch)
+        else:
+            out.append(ch)
+        is_first_letter = False
+    return "".join(out)
+
+
+def _split_trailing_upper_tag(text: str) -> tuple[str, str] | None:
+    if len(text) >= 3 and text[-1].isascii() and text[-1].isupper():
+        stem = text[:-1].strip()
+        if stem:
+            return stem, text[-1]
+    return None
+
+
+def suggest_skip_vowels(
+    token: str,
+    *,
+    known_entries: Iterable[tuple[str, str]] = (),
+    extra_lexicon: Iterable[str] = (),
+) -> list[str]:
+    """Suggest ranked vowel-restored clean forms for a consonant-heavy MUNSC token."""
+    trimmed = token.strip()
+    if not trimmed:
+        return []
+
+    results: list[str] = []
+    seen: set[str] = set()
+
+    def add_unique(candidate: str) -> None:
+        clean = candidate.strip()
+        if clean and clean not in seen:
+            seen.add(clean)
+            results.append(clean)
+
+    if trimmed in BUILTIN_SKIP_VOWELS_MAPPINGS:
+        add_unique(BUILTIN_SKIP_VOWELS_MAPPINGS[trimmed])
+    else:
+        for k, v in BUILTIN_SKIP_VOWELS_MAPPINGS.items():
+            if k.lower() == trimmed.lower():
+                add_unique(v)
+                break
+
+    known_list = list(known_entries)
+    for k, v in known_list:
+        if k == trimmed:
+            add_unique(v)
+    for k, v in known_list:
+        if k.lower() == trimmed.lower():
+            add_unique(v)
+
+    lexicon: list[str] = []
+    seen_lex: set[str] = set()
+    for phrase in (*extra_lexicon, *(v for _, v in known_list), *BUILTIN_SKIP_VOWELS_LEXICON):
+        if phrase and phrase not in seen_lex:
+            seen_lex.add(phrase)
+            lexicon.append(phrase)
+
+    target_skel = consonant_skeleton(trimmed)
+    target_lead_skel = consonant_skeleton(trimmed, include_leading_vowel=True)
+    split_tok = _split_trailing_upper_tag(trimmed)
+
+    if target_skel or split_tok is not None:
+        for candidate in lexicon:
+            cand_skel = consonant_skeleton(candidate)
+            cand_lead_skel = consonant_skeleton(candidate, include_leading_vowel=True)
+            if target_skel and (cand_skel == target_skel or cand_lead_skel == target_lead_skel):
+                add_unique(candidate)
+                continue
+            if split_tok is not None:
+                tok_stem, tok_tag = split_tok
+                tok_stem_skel = consonant_skeleton(tok_stem)
+                cand_split = _split_trailing_upper_tag(candidate)
+                if (
+                    cand_split is not None
+                    and cand_split[1] == tok_tag
+                    and tok_stem_skel
+                    and consonant_skeleton(cand_split[0]) == tok_stem_skel
+                ):
+                    add_unique(candidate)
+                elif tok_stem_skel and cand_skel == tok_stem_skel and not candidate.endswith(f" {tok_tag}"):
+                    add_unique(f"{candidate} {tok_tag}")
+
+    if not results:
+        add_unique(trimmed)
+    return results
+
+
+def make_skip_vowels_rule(token: str, normalized: str) -> MUNSCRule:
+    """Construct a verified MUNSCRule for a skip-vowels token."""
+    clean_tok = token.strip()
+    clean_norm = normalized.strip()
+    if not clean_tok or not clean_norm or clean_tok == clean_norm:
+        raise ValueError("Skip-vowels MUNSCRule requires distinct non-empty token and normalized form.")
+    slug = "".join(ch if ch.isalnum() else "_" for ch in clean_tok)
+    return MUNSCRule(
+        name=f"skip_vowels_{slug}",
+        pattern=clean_tok,
+        replacement=clean_norm,
+        is_regex=False,
+        description="Skip vowels verified",
+    )
+
+
+def verify_ii_token(token: str) -> str:
+    """Append `ii` (if not already ending with `ii`) for ILS ATSS verification."""
+    clean = token.strip()
+    if not clean:
+        return ""
+    if clean.endswith("ii"):
+        return clean
+    return f"{clean}ii"
+
+
+def verify_is5_token(token: str) -> str:
+    """Replace standalone `is` with `is5` or append `is5` to avoid grammar squiggles."""
+    clean = token.strip()
+    if not clean:
+        return ""
+    if clean.lower() == "is":
+        return "is5"
+    if clean.endswith("is5"):
+        return clean
+    return f"{clean}is5"
+
+
+def is_i9or1_hierarchy_token(token: str) -> bool:
+    """Return True for `i9or1`, `*is5` hierarchy tags, or verified `*ii` tokens."""
+    clean = token.strip()
+    if clean == "i9or1":
+        return True
+    if clean.endswith("is5"):
+        return True
+    if len(clean) >= 3 and clean.endswith("ii"):
+        return True
+    return False
+

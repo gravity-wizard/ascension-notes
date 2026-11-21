@@ -1,5 +1,6 @@
 #if os(macOS)
 import AppKit
+import AscensionCore
 import SwiftUI
 
 /// Unified macOS NSTextView editor:
@@ -8,6 +9,8 @@ import SwiftUI
 /// - Folding is completely separate (Right-click -> Folding, or Cmd+Option+[ / ]).
 /// - Safe against Spacebar autocomplete crashes (never mutates textStorage during marked text).
 /// - Bottom overscroll padding lets you scroll text up the screen without blank lines.
+/// - Right-click & cursor-aware Quick Actions for Skip Vowels, +ii, +is5, and Learn Spelling.
+/// - Drag-and-drop & clipboard image paste saving lossless Retina PNGs + clean ▸[Image: ...] markers.
 struct UnifiedNoteTextView: NSViewRepresentable {
     @Bindable var store: NotesStore
     let noteID: UUID
@@ -44,6 +47,7 @@ struct UnifiedNoteTextView: NSViewRepresentable {
             textContainer: textContainer
         )
         textView.coordinator = context.coordinator
+        textView.delegate = context.coordinator
         textView.isEditable = true
         textView.isSelectable = true
         textView.isRichText = false
@@ -58,6 +62,7 @@ struct UnifiedNoteTextView: NSViewRepresentable {
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.drawsBackground = false
         textView.textContainerInset = NSSize(width: 24, height: 10)
+        textView.registerForDraggedTypes([.fileURL, .png, .tiff, .URL])
 
         textView.isContinuousSpellCheckingEnabled = true
         textView.isGrammarCheckingEnabled = true
@@ -73,12 +78,15 @@ struct UnifiedNoteTextView: NSViewRepresentable {
         context.coordinator.lastNoteID = noteID
         context.coordinator.lastSyncedText = text
         context.coordinator.lastAutoCap = autoCapitalizeNewLines
+        context.coordinator.installTextViewActionHandler()
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? AscensionNSTextView else { return }
         context.coordinator.store = store
+        context.coordinator.textView = textView
+        context.coordinator.installTextViewActionHandler()
         textView.isEditable = true
         textView.isSelectable = true
 
@@ -120,7 +128,9 @@ struct UnifiedNoteTextView: NSViewRepresentable {
             context.coordinator.lastSyncedText = text
             applyAllTypography(to: textView, defaultSize: defaultFontSize, spans: fontSpans)
 
-            if !switchedNote {
+            if switchedNote {
+                context.coordinator.clearPublishedSpellTargetAsync()
+            } else {
                 let clampedLoc = min(previousSelection.location, (text as NSString).length)
                 textView.setSelectedRange(NSRange(location: clampedLoc, length: 0))
             }
@@ -133,12 +143,16 @@ struct UnifiedNoteTextView: NSViewRepresentable {
         textView.isAutomaticTextReplacementEnabled = enabled
     }
 
+    private static let imageMarkerRegex = try? NSRegularExpression(pattern: #"▸\[Image:[^\n\]]*\]"#)
+
     private func applyAllTypography(to textView: AscensionNSTextView, defaultSize: Double, spans: [FontSizeSpan]) {
         let bodyFont = NSFont.systemFont(ofSize: defaultSize)
         let titleFont = NSFont.systemFont(ofSize: defaultSize + 7.0, weight: .bold)
         let foldFont = NSFont.monospacedSystemFont(ofSize: max(11.0, defaultSize - 1.5), weight: .semibold)
+        let imageMarkerFont = NSFont.monospacedSystemFont(ofSize: max(11.0, defaultSize - 1.5), weight: .medium)
         let bodyColor = NSColor.labelColor
         let foldBg = NSColor.systemYellow.withAlphaComponent(0.22)
+        let imageBg = NSColor.systemBlue.withAlphaComponent(0.14)
 
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 4
@@ -194,6 +208,14 @@ struct UnifiedNoteTextView: NSViewRepresentable {
                 searchStart = found.location + found.length
             }
         }
+
+        if let imgRegex = Self.imageMarkerRegex {
+            let matches = imgRegex.matches(in: storage.string, range: NSRange(location: 0, length: totalLen))
+            for match in matches {
+                storage.addAttributes([.font: imageMarkerFont, .backgroundColor: imageBg], range: match.range)
+            }
+        }
+
         storage.endEditing()
         textView.selectedRanges = selectedRanges
         textView.typingAttributes = [
@@ -205,15 +227,110 @@ struct UnifiedNoteTextView: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject {
+    final class Coordinator: NSObject, NSTextViewDelegate {
         var store: NotesStore
         weak var textView: AscensionNSTextView?
         var lastNoteID: UUID?
         var lastSyncedText: String = ""
         var lastAutoCap: Bool = false
+        var lastPublishedSpellTarget: CursorSpellTarget? = nil
 
         init(store: NotesStore) {
             self.store = store
+        }
+
+        func installTextViewActionHandler() {
+            store.activeTextViewActionHandler = { [weak self] action in
+                guard let self, let tv = self.textView else { return false }
+                switch action {
+                case .replaceRange(let location, let length, let replacement, let learnWord):
+                    let ns = tv.string as NSString
+                    guard location >= 0, length >= 0, location + length <= ns.length else {
+                        return false
+                    }
+                    let range = NSRange(location: location, length: length)
+                    guard tv.shouldChangeText(in: range, replacementString: replacement) else {
+                        return false
+                    }
+                    tv.replaceCharacters(in: range, with: replacement)
+                    let newLen = (replacement as NSString).length
+                    if let learnWord, !learnWord.isEmpty {
+                        NSSpellChecker.shared.learnWord(learnWord)
+                    }
+                    tv.didChangeText()
+                    let newRange = NSRange(location: location, length: newLen)
+                    tv.layoutManager?.removeTemporaryAttribute(.spellingState, forCharacterRange: newRange)
+                    let cursorPos = min(location + newLen, (tv.string as NSString).length)
+                    tv.setSelectedRange(NSRange(location: cursorPos, length: 0))
+                    tv.window?.makeFirstResponder(tv)
+                    tv.checkTextInDocument(nil)
+                    self.refreshCursorSpellTarget(on: tv)
+                    return true
+
+                case .learnOnly(let word):
+                    NSSpellChecker.shared.learnWord(word)
+                    tv.clearSpellingUnderlines(for: word)
+                    tv.checkTextInDocument(nil)
+                    self.refreshCursorSpellTarget(on: tv)
+                    return true
+                }
+            }
+        }
+
+        func clearPublishedSpellTargetAsync() {
+            lastPublishedSpellTarget = nil
+            DispatchQueue.main.async { [weak self] in
+                self?.store.cursorSpellTarget = nil
+            }
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let tv = notification.object as? AscensionNSTextView,
+                  !tv.hasMarkedText() else {
+                return
+            }
+            refreshCursorSpellTarget(on: tv)
+        }
+
+        func refreshCursorSpellTarget(on tv: AscensionNSTextView) {
+            guard let noteID = lastNoteID else { return }
+            let sel = tv.selectedRange()
+            guard sel.location != NSNotFound, sel.length <= 24 else {
+                publishSpellTargetIfNeeded(nil)
+                return
+            }
+
+            guard let inspection = SpellcheckHelper.inspectWord(
+                at: sel.location,
+                in: tv.string,
+                spellDocumentTag: tv.spellCheckerDocumentTag
+            ) else {
+                publishSpellTargetIfNeeded(nil)
+                return
+            }
+
+            let suggestion = store.suggestSkipVowels(for: inspection.word)
+            let target = CursorSpellTarget(
+                noteID: noteID,
+                word: inspection.word,
+                rangeLocation: inspection.rangeLocation,
+                rangeLength: inspection.rangeLength,
+                isMisspelled: inspection.isMisspelled,
+                isGrammarIs: inspection.isGrammarIs,
+                guesses: inspection.guesses,
+                skipVowelsSuggestion: suggestion?.normalized,
+                skipVowelsIsExact: suggestion?.isExactMatch ?? false
+            )
+            publishSpellTargetIfNeeded(target)
+        }
+
+        private func publishSpellTargetIfNeeded(_ target: CursorSpellTarget?) {
+            guard target != lastPublishedSpellTarget else { return }
+            lastPublishedSpellTarget = target
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.store.cursorSpellTarget = target
+            }
         }
 
         func handleTextDidChange(on tv: AscensionNSTextView) {
@@ -231,6 +348,7 @@ struct UnifiedNoteTextView: NSViewRepresentable {
             DispatchQueue.main.async { [weak self, weak tv] in
                 guard let self, let tv, !tv.hasMarkedText() else { return }
                 self.reapplyVisualLine1AndFoldsPreservingSpans(on: tv)
+                self.refreshCursorSpellTarget(on: tv)
             }
         }
 
@@ -261,7 +379,7 @@ struct UnifiedNoteTextView: NSViewRepresentable {
 
         func enrichContextMenu(
             _ baseMenu: NSMenu,
-            for view: NSTextView,
+            for view: AscensionNSTextView,
             at charIndex: Int
         ) -> NSMenu {
             let enriched = (baseMenu.copy() as? NSMenu) ?? NSMenu()
@@ -356,6 +474,139 @@ struct UnifiedNoteTextView: NSViewRepresentable {
             fmtParent.submenu = fmtMenu
             enriched.insertItem(fmtParent, at: 0)
 
+            // Red-underlined token & standalone "is" Quick Actions at the very top
+            if let inspection = SpellcheckHelper.inspectWord(
+                at: charIndex,
+                in: view.string,
+                spellDocumentTag: view.spellCheckerDocumentTag
+            ) {
+                var quickItems: [NSMenuItem] = []
+                let tokenRange = NSRange(location: inspection.rangeLocation, length: inspection.rangeLength)
+
+                let header = NSMenuItem(
+                    title: inspection.isGrammarIs
+                        ? "Grammar Tag: \"\(inspection.word)\""
+                        : "Ascension Quick Fix: \"\(inspection.word)\"",
+                    action: nil,
+                    keyEquivalent: ""
+                )
+                header.isEnabled = false
+                quickItems.append(header)
+
+                if inspection.isGrammarIs {
+                    let is5Item = NSMenuItem(
+                        title: "Replace \"\(inspection.word)\" with \"is5\" (No Grammar Squiggle)",
+                        action: #selector(AscensionNSTextView.quickReplaceWithIS5(_:)),
+                        keyEquivalent: ""
+                    )
+                    is5Item.target = view
+                    is5Item.representedObject = SpellMenuPayload(
+                        word: inspection.word,
+                        range: tokenRange,
+                        replacement: "is5"
+                    )
+                    quickItems.append(is5Item)
+
+                    let iiTarget = VerificationTagHelper.appendII(to: inspection.word)
+                    let iiItem = NSMenuItem(
+                        title: "Append \"ii\" (\"\(inspection.word)\" → \"\(iiTarget)\") & Verify",
+                        action: #selector(AscensionNSTextView.quickAppendII(_:)),
+                        keyEquivalent: ""
+                    )
+                    iiItem.target = view
+                    iiItem.representedObject = SpellMenuPayload(
+                        word: inspection.word,
+                        range: tokenRange,
+                        replacement: iiTarget
+                    )
+                    quickItems.append(iiItem)
+                } else {
+                    let suggestion = store.suggestSkipVowels(for: inspection.word)
+                    if let suggestion, suggestion.isExactMatch {
+                        let oneClick = NSMenuItem(
+                            title: "1-Click Skip Vowels: \"\(inspection.word)\" → \"\(suggestion.normalized)\"",
+                            action: #selector(AscensionNSTextView.quickApplyExactSkipVowels(_:)),
+                            keyEquivalent: ""
+                        )
+                        oneClick.target = view
+                        oneClick.representedObject = SpellMenuPayload(
+                            word: inspection.word,
+                            range: tokenRange,
+                            replacement: suggestion.normalized
+                        )
+                        quickItems.append(oneClick)
+                    }
+
+                    let promptTitle: String
+                    if let sug = suggestion {
+                        promptTitle = "Verify & Add \"Skip Vowels\" Rule (\"\(sug.normalized)\")..."
+                    } else {
+                        promptTitle = "Verify & Add \"Skip Vowels\" Rule..."
+                    }
+                    let skipItem = NSMenuItem(
+                        title: promptTitle,
+                        action: #selector(AscensionNSTextView.quickPromptSkipVowels(_:)),
+                        keyEquivalent: ""
+                    )
+                    skipItem.target = view
+                    skipItem.representedObject = SpellMenuPayload(
+                        word: inspection.word,
+                        range: tokenRange,
+                        replacement: suggestion?.normalized
+                    )
+                    quickItems.append(skipItem)
+
+                    let iiTarget = VerificationTagHelper.appendII(to: inspection.word)
+                    let iiTitle = iiTarget == inspection.word
+                        ? "Verify \"\(inspection.word)\" (ILS ATSS ii)"
+                        : "Append \"ii\" (\"\(inspection.word)\" → \"\(iiTarget)\") & Verify"
+                    let iiItem = NSMenuItem(
+                        title: iiTitle,
+                        action: #selector(AscensionNSTextView.quickAppendII(_:)),
+                        keyEquivalent: ""
+                    )
+                    iiItem.target = view
+                    iiItem.representedObject = SpellMenuPayload(
+                        word: inspection.word,
+                        range: tokenRange,
+                        replacement: iiTarget
+                    )
+                    quickItems.append(iiItem)
+
+                    let is5Target = VerificationTagHelper.appendIS5(to: inspection.word)
+                    let is5Item = NSMenuItem(
+                        title: "Append \"is5\" (\"\(inspection.word)\" → \"\(is5Target)\") — Hierarchy Tag",
+                        action: #selector(AscensionNSTextView.quickAppendIS5(_:)),
+                        keyEquivalent: ""
+                    )
+                    is5Item.target = view
+                    is5Item.representedObject = SpellMenuPayload(
+                        word: inspection.word,
+                        range: tokenRange,
+                        replacement: is5Target
+                    )
+                    quickItems.append(is5Item)
+
+                    let learnItem = NSMenuItem(
+                        title: "Learn Spelling (\"\(inspection.word)\")",
+                        action: #selector(AscensionNSTextView.quickLearnSpelling(_:)),
+                        keyEquivalent: ""
+                    )
+                    learnItem.target = view
+                    learnItem.representedObject = SpellMenuPayload(
+                        word: inspection.word,
+                        range: tokenRange,
+                        replacement: nil
+                    )
+                    quickItems.append(learnItem)
+                }
+
+                quickItems.append(.separator())
+                for item in quickItems.reversed() {
+                    enriched.insertItem(item, at: 0)
+                }
+            }
+
             return enriched
         }
 
@@ -386,7 +637,9 @@ struct UnifiedNoteTextView: NSViewRepresentable {
             }
 
             let foldFont = NSFont.monospacedSystemFont(ofSize: max(11.0, store.editorFontSize - 1.5), weight: .semibold)
+            let imageMarkerFont = NSFont.monospacedSystemFont(ofSize: max(11.0, store.editorFontSize - 1.5), weight: .medium)
             let foldBg = NSColor.systemYellow.withAlphaComponent(0.22)
+            let imageBg = NSColor.systemBlue.withAlphaComponent(0.14)
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineSpacing = 4
 
@@ -421,6 +674,14 @@ struct UnifiedNoteTextView: NSViewRepresentable {
                     }
                 }
             }
+
+            if let imgRegex = UnifiedNoteTextView.imageMarkerRegex {
+                let matches = imgRegex.matches(in: storage.string, range: NSRange(location: 0, length: len))
+                for match in matches {
+                    storage.addAttributes([.font: imageMarkerFont, .backgroundColor: imageBg], range: match.range)
+                }
+            }
+
             storage.endEditing()
 
             let clampedSelections: [NSValue] = savedSelections.map { val in
@@ -443,6 +704,19 @@ struct UnifiedNoteTextView: NSViewRepresentable {
     }
 }
 
+@MainActor
+final class SpellMenuPayload: NSObject {
+    let word: String
+    let range: NSRange
+    let replacement: String?
+
+    init(word: String, range: NSRange, replacement: String?) {
+        self.word = word
+        self.range = range
+        self.replacement = replacement
+    }
+}
+
 final class AscensionNoteScrollView: NSScrollView {
     override func mouseDown(with event: NSEvent) {
         if let tv = documentView as? NSTextView {
@@ -458,12 +732,72 @@ final class AscensionNoteScrollView: NSScrollView {
 final class AscensionNSTextView: NSTextView {
     weak var coordinator: UnifiedNoteTextView.Coordinator?
 
+    override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
+        super.init(frame: frameRect, textContainer: container)
+        registerForDraggedTypes([.fileURL, .png, .tiff, .URL])
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        registerForDraggedTypes([.fileURL, .png, .tiff, .URL])
+    }
+
     func ensureFullLayoutAndFrame() {
         guard let tc = textContainer, let lm = layoutManager else { return }
         lm.ensureLayout(for: tc)
         sizeToFit()
         needsLayout = true
         needsDisplay = true
+    }
+
+    func clearSpellingUnderlines(for word: String) {
+        let ns = string as NSString
+        let len = ns.length
+        guard len > 0, let lm = layoutManager else { return }
+        var search = 0
+        while search < len {
+            let found = ns.range(of: word, options: [], range: NSRange(location: search, length: len - search))
+            if found.location == NSNotFound { break }
+            lm.removeTemporaryAttribute(.spellingState, forCharacterRange: found)
+            search = found.location + max(1, found.length)
+        }
+    }
+
+    // MARK: - Drag-and-Drop Screenshots & Images
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        if RetinaImageSupport.pasteboardHasImage(sender.draggingPasteboard) {
+            return .copy
+        }
+        return super.draggingEntered(sender)
+    }
+
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        if RetinaImageSupport.pasteboardHasImage(sender.draggingPasteboard) {
+            return .copy
+        }
+        return super.draggingUpdated(sender)
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        let images = RetinaImageSupport.extractImages(from: sender.draggingPasteboard)
+        if !images.isEmpty {
+            let pt = convert(sender.draggingLocation, from: nil)
+            let dropIndex = max(0, min(characterIndexForInsertion(at: pt), (string as NSString).length))
+            return insertPreparedImages(images, replacing: NSRange(location: dropIndex, length: 0))
+        }
+        return super.performDragOperation(sender)
+    }
+
+    // MARK: - Normalized Paste & Clipboard Image Paste
+
+    override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(paste(_:)) || item.action == #selector(pasteAsPlainText(_:)) {
+            if RetinaImageSupport.pasteboardHasImage(NSPasteboard.general) {
+                return true
+            }
+        }
+        return super.validateUserInterfaceItem(item)
     }
 
     override func paste(_ sender: Any?) {
@@ -475,7 +809,26 @@ final class AscensionNSTextView: NSTextView {
     }
 
     private func performNormalizedPlainTextPaste(_ sender: Any?) {
-        guard let rawPaste = NSPasteboard.general.string(forType: .string) else {
+        let rawPaste = NSPasteboard.general.string(forType: .string)
+        let hasPlainText = !(rawPaste ?? "").isEmpty
+
+        if !hasPlainText && RetinaImageSupport.pasteboardHasImage(NSPasteboard.general) {
+            let images = RetinaImageSupport.extractImages(from: NSPasteboard.general)
+            if !images.isEmpty {
+                let currentNS = string as NSString
+                let rawSel = selectedRange()
+                let clampedLoc = rawSel.location == NSNotFound
+                    ? currentNS.length
+                    : max(0, min(rawSel.location, currentNS.length))
+                let clampedLen = rawSel.location == NSNotFound
+                    ? 0
+                    : max(0, min(rawSel.length, currentNS.length - clampedLoc))
+                _ = insertPreparedImages(images, replacing: NSRange(location: clampedLoc, length: clampedLen))
+                return
+            }
+        }
+
+        guard let rawPaste else {
             super.pasteAsPlainText(sender)
             ensureFullLayoutAndFrame()
             return
@@ -549,6 +902,40 @@ final class AscensionNSTextView: NSTextView {
         scrollRangeToVisible(cursorRange)
     }
 
+    private func insertPreparedImages(_ images: [RetinaImageSupport.PreparedPNG], replacing sel: NSRange) -> Bool {
+        guard let store = coordinator?.store else { return false }
+        var markers: [String] = []
+        for item in images {
+            if let saved = store.saveImageAttachment(
+                pngData: item.pngData,
+                filename: item.filename,
+                pixelWidth: item.pixelWidth,
+                pixelHeight: item.pixelHeight
+            ) {
+                markers.append(saved.markerText)
+            }
+        }
+        guard !markers.isEmpty else { return false }
+        let insertion = markers.joined(separator: "\n")
+
+        let currentNS = string as NSString
+        let clampedLoc = max(0, min(sel.location, currentNS.length))
+        let clampedLen = max(0, min(sel.length, currentNS.length - clampedLoc))
+        let safeRange = NSRange(location: clampedLoc, length: clampedLen)
+
+        guard shouldChangeText(in: safeRange, replacementString: insertion) else { return false }
+        replaceCharacters(in: safeRange, with: insertion)
+        didChangeText()
+
+        let endLoc = min(safeRange.location + (insertion as NSString).length, (string as NSString).length)
+        let cursorRange = NSRange(location: endLoc, length: 0)
+        setSelectedRange(cursorRange)
+        window?.makeFirstResponder(self)
+        ensureFullLayoutAndFrame()
+        scrollRangeToVisible(cursorRange)
+        return true
+    }
+
     override func didChangeText() {
         super.didChangeText()
         coordinator?.handleTextDidChange(on: self)
@@ -559,6 +946,70 @@ final class AscensionNSTextView: NSTextView {
         let pt = convert(event.locationInWindow, from: nil)
         let charIndex = characterIndexForInsertion(at: pt)
         return coordinator?.enrichContextMenu(baseMenu, for: self, at: charIndex) ?? baseMenu
+    }
+
+    // MARK: - Red-Underlined & Grammar Quick Actions
+
+    @objc func quickApplyExactSkipVowels(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? SpellMenuPayload,
+              let target = payload.replacement else { return }
+        _ = coordinator?.store.addSkipVowelsRule(token: payload.word, normalized: target)
+        clearSpellingUnderlines(for: payload.word)
+        checkTextInDocument(nil)
+        coordinator?.refreshCursorSpellTarget(on: self)
+    }
+
+    @objc func quickPromptSkipVowels(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? SpellMenuPayload else { return }
+        coordinator?.store.openSkipVowelsPrompt(
+            token: payload.word,
+            rangeLocation: payload.range.location,
+            rangeLength: payload.range.length
+        )
+    }
+
+    @objc func quickAppendII(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? SpellMenuPayload else { return }
+        applyTokenReplacement(payload: payload, newWord: payload.replacement ?? VerificationTagHelper.appendII(to: payload.word))
+    }
+
+    @objc func quickAppendIS5(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? SpellMenuPayload else { return }
+        applyTokenReplacement(payload: payload, newWord: payload.replacement ?? VerificationTagHelper.appendIS5(to: payload.word))
+    }
+
+    @objc func quickReplaceWithIS5(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? SpellMenuPayload else { return }
+        applyTokenReplacement(payload: payload, newWord: "is5")
+    }
+
+    @objc func quickLearnSpelling(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? SpellMenuPayload else { return }
+        coordinator?.store.applyLearnWord(token: payload.word)
+        clearSpellingUnderlines(for: payload.word)
+        checkTextInDocument(nil)
+        coordinator?.refreshCursorSpellTarget(on: self)
+    }
+
+    private func applyTokenReplacement(payload: SpellMenuPayload, newWord: String) {
+        let ns = string as NSString
+        guard payload.range.location != NSNotFound,
+              payload.range.location + payload.range.length <= ns.length,
+              ns.substring(with: payload.range) == payload.word else {
+            return
+        }
+        NSSpellChecker.shared.learnWord(newWord)
+        if payload.word != newWord {
+            guard shouldChangeText(in: payload.range, replacementString: newWord) else { return }
+            replaceCharacters(in: payload.range, with: newWord)
+            didChangeText()
+        }
+        let newRange = NSRange(location: payload.range.location, length: (newWord as NSString).length)
+        layoutManager?.removeTemporaryAttribute(.spellingState, forCharacterRange: newRange)
+        let cursorPos = min(payload.range.location + (newWord as NSString).length, (string as NSString).length)
+        setSelectedRange(NSRange(location: cursorPos, length: 0))
+        checkTextInDocument(nil)
+        coordinator?.refreshCursorSpellTarget(on: self)
     }
 
     @objc func wrapBold(_ sender: Any?) { wrapSelection(prefix: "**", suffix: "**") }

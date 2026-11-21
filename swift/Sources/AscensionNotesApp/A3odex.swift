@@ -121,6 +121,9 @@ public enum A3odexCatalog: Sendable {
         A3odexEntry(token: "AX1F", canonical: "AXIF", tier: .funs, meaning: "Leet-1 AXIF variant normalizing cleanly back to AXIF via custom/leet rules."),
         A3odexEntry(token: "T0UX", canonical: "Time0", tier: .funs, meaning: "Base-38 Jesus Clock Unix epoch anchor (1584540571 / 2020-03-18T14:09:31Z)."),
         A3odexEntry(token: "B00K", canonical: "Book", tier: .funs, meaning: "Double-zero leet MUNSC token for Reading & Book checklists."),
+        A3odexEntry(token: "NrmA", canonical: "Norma A", tier: .funs, meaning: "Skip-vowels 4-char FUN for Norma A (Where's Norma? Book A)."),
+        A3odexEntry(token: "NrmB", canonical: "Norma B", tier: .funs, meaning: "Skip-vowels 4-char FUN for Norma B (Where's Norma? Book B)."),
+        A3odexEntry(token: "GSii", canonical: "GSii", tier: .funs, meaning: "Verified double-i (ii) 4-char FUN used by certified ILS ATSS."),
 
         // 5c FUNCs
         A3odexEntry(token: "N0rma", canonical: "Norma", tier: .funcs, meaning: "Internal-zero leet MUNSC for Norma in Chamber Luncheon logs."),
@@ -128,6 +131,7 @@ public enum A3odexCatalog: Sendable {
         A3odexEntry(token: "Norm4", canonical: "Norma", tier: .funcs, meaning: "Leet-4 MUNSC variant normalizing to Norma in Clean View."),
         A3odexEntry(token: "MUNSC", canonical: "MUNSC", tier: .funcs, meaning: "Multiple Unique Non-Special Characters embedded inside clean prose."),
         A3odexEntry(token: "Time0", canonical: "Time0", tier: .funcs, meaning: "March 8 Miracle / Base-38 zero-point clock reference."),
+        A3odexEntry(token: "i9or1", canonical: "i9or1", tier: .funcs, meaning: "Search hierarchy 5-char FUNC (immediate, incredibly important, information) paired with is5."),
 
         // 6c SxUNCs
         A3odexEntry(token: "Acode9", canonical: "Acode9", tier: .sxuncs, meaning: "9-char Jesus Clock stamped identifier (e.g. Ab2p^a40z)."),
@@ -135,10 +139,13 @@ public enum A3odexCatalog: Sendable {
         A3odexEntry(token: "Norma4", canonical: "Norma", tier: .sxuncs, meaning: "Trailing numeric disambiguator MUNSC normalizing to Norma."),
         A3odexEntry(token: "7Aunts", canonical: "7 Aunts", tier: .sxuncs, meaning: "Seven Aunts reference token from Formicary Castle logs."),
         A3odexEntry(token: "good1a", canonical: "good1a", tier: .sxuncs, meaning: "Strict letter-bounded 4-char Acode9 tail mode [a-z][0-9a-z]{2}[a-z]."),
+        A3odexEntry(token: "Anotes", canonical: "Ascension Notes", tier: .sxuncs, meaning: "Skip-vowels 6-char SxUNC referring to the Ascension Notes app."),
 
         // 7c SvnUNCs
         A3odexEntry(token: "First1a", canonical: "First1a", tier: .svnuncs, meaning: "Defining First1a milestone marker across Ascender1a logs."),
-        A3odexEntry(token: "S1tsUW8", canonical: "SitsUW8", tier: .svnuncs, meaning: "Sits-You-Weigh-Station MUNSC token (7-char SvnUNC).")
+        A3odexEntry(token: "S1tsUW8", canonical: "SitsUW8", tier: .svnuncs, meaning: "Sits-You-Weigh-Station MUNSC token (7-char SvnUNC)."),
+        A3odexEntry(token: "WhrNrmA", canonical: "Where's Norma A", tier: .svnuncs, meaning: "Skip-vowels 7-char SvnUNC for Where's Norma? Book A."),
+        A3odexEntry(token: "WhrNrmB", canonical: "Where's Norma B", tier: .svnuncs, meaning: "Skip-vowels 7-char SvnUNC for Where's Norma? Book B.")
     ]
 
     public static func decodeJSON(_ data: Data) throws -> [A3odexEntry] {

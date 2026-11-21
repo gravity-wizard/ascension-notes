@@ -323,6 +323,7 @@ public enum MUNSCNormalizer: Sendable {
         autoDetect: Bool = true
     ) -> (normalized: String, ruleName: String)? {
         guard !token.isEmpty else { return nil }
+        if token.hasPrefix("▸[") { return nil }
         if protectedTokens.contains(token) { return nil }
         if token.count == 9 && Acode9.validate(token, filterProfanity: false).valid {
             return nil
@@ -383,7 +384,7 @@ public struct AXIFDocument: Sendable, Identifiable {
     public let autoDetect: Bool
 
     private static let tokenScanRegex = try! NSRegularExpression(
-        pattern: "A[a-z][0-9a-z|\\^]{2}[\\^\\-][0-9a-z|\\^]{4}|[A-Za-z0-9]+"
+        pattern: #"▸\[(?:Image|Folded)[^\n\]]*\]|A[a-z][0-9a-z|\^]{2}[\^\-][0-9a-z|\^]{4}|[A-Za-z0-9]+"#
     )
 
     public init(

@@ -23,7 +23,9 @@ from ascension import (
     AscensionNote,
     AscensionNotesStore,
     MUNSCRule,
+    NoteAttachment,
     clock2_from_timestamp,
+    consonant_skeleton,
     decode_base38,
     decode_jesus_clock,
     encode_base38,
@@ -32,17 +34,22 @@ from ascension import (
     generate_rolling_pool,
     is_clean_clock,
     is_clean_id,
+    is_i9or1_hierarchy_token,
     jesus_clock,
     jesus_clock_to_datetime,
     lead_letter_for_clock_char,
     load_custom_rules,
+    make_skip_vowels_rule,
     parse_acode9,
     safe_jesus_clock,
     save_custom_rules,
+    suggest_skip_vowels,
     to_caret,
     to_dash,
     to_url_safe_base38,
     validate_acode9,
+    verify_ii_token,
+    verify_is5_token,
 )
 
 
@@ -341,6 +348,111 @@ class AXIFAndDualLayerSearchTests(unittest.TestCase):
             bbcode = note.export_slogbog_bbcode()
             self.assertIn('[quote="Acode9: Ab2p^a40z | Clock: 2p15ek"]', bbcode)
             self.assertIn("[spoiler=AXIF][code]", bbcode)
+
+
+class SkipVowelsAndAttachmentTests(unittest.TestCase):
+    def test_skip_vowels_skeleton_and_rule_verification(self) -> None:
+        self.assertEqual(consonant_skeleton("Where's Norma"), "whrnrm")
+        self.assertEqual(consonant_skeleton("WhrNrm"), "whrnrm")
+
+        self.assertEqual(suggest_skip_vowels("WhrNrmA")[0], "Where's Norma A")
+        self.assertEqual(suggest_skip_vowels("WhrNrmB")[0], "Where's Norma B")
+        self.assertEqual(suggest_skip_vowels("NrmA")[0], "Norma A")
+        self.assertEqual(suggest_skip_vowels("NrmB")[0], "Norma B")
+        self.assertEqual(suggest_skip_vowels("Anotes")[0], "Ascension Notes")
+        self.assertEqual(suggest_skip_vowels("GSii")[0], "GSii")
+
+        # Dynamic consonant-skeleton match against custom lexicon
+        self.assertEqual(
+            suggest_skip_vowels("JssClck", extra_lexicon=["Jesus Clock"])[0],
+            "Jesus Clock",
+        )
+
+        rule = make_skip_vowels_rule("WhrNrmA", "Where's Norma A")
+        self.assertEqual(rule.description, "Skip vowels verified")
+        note = AscensionNote.create(
+            "Reading WhrNrmA and WhrNrmB inside Anotes.",
+            owner_acode9="Ab2p^a40z",
+            rules=[rule, make_skip_vowels_rule("WhrNrmB", "Where's Norma B")],
+        )
+        self.assertEqual(
+            note.render("normalized"),
+            "Reading Where's Norma A and Where's Norma B inside Anotes.",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = AscensionNotesStore(sync_folder=tmpdir)
+            saved_rule = store.add_skip_vowels_rule("NrmA", "Norma A")
+            self.assertEqual(saved_rule.description, "Skip vowels verified")
+            reloaded = load_custom_rules(tmpdir)
+            self.assertEqual(len(reloaded), 1)
+            self.assertEqual(reloaded[0].pattern, "NrmA")
+            self.assertEqual(reloaded[0].replacement, "Norma A")
+            self.assertEqual(reloaded[0].description, "Skip vowels verified")
+
+    def test_ii_is5_and_i9or1_verification_helpers(self) -> None:
+        self.assertEqual(verify_ii_token("GS"), "GSii")
+        self.assertEqual(verify_ii_token("GSii"), "GSii")
+        self.assertEqual(verify_is5_token("is"), "is5")
+        self.assertEqual(verify_is5_token("Is"), "is5")
+        self.assertEqual(verify_is5_token("Appending"), "Appendingis5")
+        self.assertEqual(verify_is5_token("Appendingis5"), "Appendingis5")
+
+        self.assertTrue(is_i9or1_hierarchy_token("i9or1"))
+        self.assertTrue(is_i9or1_hierarchy_token("GSii"))
+        self.assertTrue(is_i9or1_hierarchy_token("is5"))
+        self.assertFalse(is_i9or1_hierarchy_token("is"))
+        self.assertFalse(is_i9or1_hierarchy_token("ii"))
+
+    def test_note_attachments_backwards_compatible_roundtrip(self) -> None:
+        att = NoteAttachment(
+            id="A1B2C3D4-0000-0000-0000-000000000001",
+            filename="NormA.png",
+            relative_path="attachments/A1B2C3D4-0000-0000-0000-000000000001.png",
+            pixel_width=1600,
+            pixel_height=1000,
+            created_at="2026-11-21T05:00:00Z",
+        )
+        self.assertEqual(att.short_id, "a1b2")
+        self.assertEqual(att.marker_text, "▸[Image: NormA.png #a1b2]")
+
+        note = AscensionNote.create(
+            f"Log with NormA and screenshot:\n{att.marker_text}",
+            owner_acode9="Ab2p^a40z",
+            title="Retina Test",
+            attachments=[att],
+        )
+        self.assertEqual(
+            note.render("normalized"),
+            f"Log with Norma and screenshot:\n{att.marker_text}",
+        )
+        self.assertEqual(note.axif.munsc_count, 1)
+        payload = note.to_dict()
+        rehydrated = AscensionNote.from_dict(payload)
+        self.assertEqual(len(rehydrated.attachments), 1)
+        self.assertEqual(rehydrated.attachments[0].pixel_width, 1600)
+        self.assertEqual(rehydrated.attachments[0].pixel_height, 1000)
+
+        # Missing attachments key remains backwards-compatible
+        legacy_payload = dict(payload)
+        del legacy_payload["attachments"]
+        legacy_note = AscensionNote.from_dict(legacy_payload)
+        self.assertEqual(legacy_note.attachments, [])
+
+        # Swift camelCase StoredNote attachment payload decodes cleanly
+        swift_att = NoteAttachment.from_dict(
+            {
+                "id": "deadbeef-1111-2222-3333-444444444444",
+                "filename": "Capture.png",
+                "relativePath": "attachments/deadbeef-1111-2222-3333-444444444444.png",
+                "pixelWidth": 2560,
+                "pixelHeight": 1440,
+                "createdAt": "2026-11-21T05:10:00Z",
+            }
+        )
+        self.assertEqual(swift_att.pixel_width, 2560)
+        self.assertEqual(swift_att.pixel_height, 1440)
+        self.assertEqual(swift_att.short_id, "dead")
 
 
 if __name__ == "__main__":

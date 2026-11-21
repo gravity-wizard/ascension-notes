@@ -187,6 +187,12 @@ struct AscensionNotesRootView: View {
         .sheet(isPresented: $store.showImportAXIF) {
             ImportAXIFSheetView(store: store)
         }
+        .sheet(item: $store.skipVowelsPrompt) { request in
+            SkipVowelsConfirmSheet(store: store, request: request)
+        }
+        .sheet(item: $store.activeLightboxRequest) { request in
+            RetinaLightboxSheet(store: store, request: request)
+        }
         #if canImport(UniformTypeIdentifiers)
         .fileImporter(
             isPresented: $showSyncFolderImporter,
@@ -206,6 +212,10 @@ struct AscensionNotesRootView: View {
         }
         .onChange(of: store.selectedNoteID) { _, _ in
             copiedFeedbackLabel = nil
+            store.cursorSpellTarget = nil
+        }
+        .onChange(of: store.viewMode) { _, _ in
+            store.cursorSpellTarget = nil
         }
     }
 
@@ -571,10 +581,20 @@ struct AscensionNotesRootView: View {
                         .padding(.bottom, 8)
                     #endif
 
+                    if !note.attachments.isEmpty {
+                        Divider()
+                        NoteAttachmentsGalleryView(store: store, note: note)
+                    }
+
                     if !store.query.isEmpty && !store.selectedSearchMatches.isEmpty {
                         searchMatchesFooter
                             .padding(.horizontal, 24)
                             .padding(.bottom, 12)
+                    }
+
+                    if let target = store.cursorSpellTarget, target.noteID == note.id {
+                        Divider()
+                        cursorSpellActionStrip(target: target)
                     }
                 } else {
                     let titleBinding = Binding(
@@ -592,15 +612,55 @@ struct AscensionNotesRootView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 14) {
                             let cleanBodyIssues = store.spellcheckCleanView ? cleanViewSpellIssues(for: note) : []
+                            let (bodyClean, _) = cleanViewBodySlice(for: note)
+                            let cleanLayout = CleanViewAttachmentLayout.buildSegments(
+                                bodyClean: bodyClean,
+                                attachments: note.attachments
+                            )
 
-                            Text(highlightedCleanBodyText(for: note, spellIssues: cleanBodyIssues))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .textSelection(.enabled)
-                                .lineSpacing(6)
-                                .onTapGesture {
-                                    store.viewMode = .edit
-                                    isEditorFocused = true
+                            ForEach(cleanLayout.segments) { segment in
+                                switch segment {
+                                case .text(_, let rangeOffset, let rangeEnd):
+                                    let attrSlice = highlightedCleanBodyText(
+                                        for: note,
+                                        spellIssues: cleanBodyIssues,
+                                        rangeOffset: rangeOffset,
+                                        rangeEnd: rangeEnd
+                                    )
+                                    if !attrSlice.characters.isEmpty {
+                                        Text(attrSlice)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .textSelection(.enabled)
+                                            .lineSpacing(6)
+                                            .onTapGesture {
+                                                store.viewMode = .edit
+                                                isEditorFocused = true
+                                            }
+                                    }
+                                case .attachment(_, let attachment):
+                                    CrispAttachmentImageView(
+                                        store: store,
+                                        noteID: note.id,
+                                        attachment: attachment,
+                                        maxDisplayHeight: nil
+                                    )
                                 }
+                            }
+
+                            if !cleanLayout.unreferenced.isEmpty {
+                                Divider()
+                                Text("Attached Screenshots")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                ForEach(cleanLayout.unreferenced) { attachment in
+                                    CrispAttachmentImageView(
+                                        store: store,
+                                        noteID: note.id,
+                                        attachment: attachment,
+                                        maxDisplayHeight: nil
+                                    )
+                                }
+                            }
 
                             if store.spellcheckCleanView && !cleanBodyIssues.isEmpty {
                                 cleanViewSpellcheckTray(issues: cleanBodyIssues, note: note)
@@ -821,6 +881,132 @@ struct AscensionNotesRootView: View {
         return SpellcheckHelper.findIssues(in: bodyClean)
     }
 
+    private func cursorSpellActionStrip(target: CursorSpellTarget) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Text(target.word)
+                    .font(.caption.monospaced().bold())
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background((target.isGrammarIs ? Color.blue : Color.red).opacity(0.14))
+                    .foregroundStyle(target.isGrammarIs ? .blue : .red)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+
+                if target.isGrammarIs {
+                    Button {
+                        store.applyAppendIS5(
+                            token: target.word,
+                            location: target.rangeLocation,
+                            length: target.rangeLength
+                        )
+                    } label: {
+                        Label("Replace \"\(target.word)\" → \"is5\" (No Grammar Squiggle)", systemImage: "checkmark.seal.fill")
+                            .font(.caption.weight(.medium))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(notesGold)
+                    .controlSize(.small)
+
+                    Button {
+                        store.applyAppendII(
+                            token: target.word,
+                            location: target.rangeLocation,
+                            length: target.rangeLength
+                        )
+                    } label: {
+                        Text("Append \"ii\" → \(VerificationTagHelper.appendII(to: target.word))")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                } else {
+                    if let suggestion = target.skipVowelsSuggestion, target.skipVowelsIsExact {
+                        Button {
+                            _ = store.addSkipVowelsRule(token: target.word, normalized: suggestion)
+                        } label: {
+                            Label("Skip Vowels: → \"\(suggestion)\"", systemImage: "text.badge.checkmark")
+                                .font(.caption.weight(.medium))
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(notesGold)
+                        .controlSize(.small)
+                    }
+
+                    Button {
+                        store.openSkipVowelsPrompt(
+                            token: target.word,
+                            rangeLocation: target.rangeLocation,
+                            rangeLength: target.rangeLength
+                        )
+                    } label: {
+                        Label(
+                            target.skipVowelsSuggestion != nil
+                                ? "Skip Vowels Rule..."
+                                : "Verify \"Skip Vowels\"...",
+                            systemImage: "slider.horizontal.3"
+                        )
+                        .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    let iiTarget = VerificationTagHelper.appendII(to: target.word)
+                    Button {
+                        store.applyAppendII(
+                            token: target.word,
+                            location: target.rangeLocation,
+                            length: target.rangeLength
+                        )
+                    } label: {
+                        Text(iiTarget == target.word ? "Verify \"\(target.word)\" (ii)" : "Append \"ii\" → \(iiTarget)")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    let is5Target = VerificationTagHelper.appendIS5(to: target.word)
+                    Button {
+                        store.applyAppendIS5(
+                            token: target.word,
+                            location: target.rangeLocation,
+                            length: target.rangeLength
+                        )
+                    } label: {
+                        Text("Append \"is5\" → \(is5Target)")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    Button {
+                        store.applyLearnWord(token: target.word)
+                    } label: {
+                        Text("Learn \"\(target.word)\"")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    ForEach(target.guesses.prefix(2), id: \.self) { guess in
+                        Button(guess) {
+                            store.applyReplaceSpan(
+                                location: target.rangeLocation,
+                                length: target.rangeLength,
+                                with: guess,
+                                learnWord: nil
+                            )
+                        }
+                        .font(.caption)
+                        .buttonStyle(.borderless)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 6)
+        }
+        .background(Color.secondary.opacity(0.06))
+    }
+
     private func cleanViewSpellcheckTray(issues: [SpellcheckIssue], note: StoredNote) -> some View {
         let (_, bodyStartOffset) = cleanViewBodySlice(for: note)
         return VStack(alignment: .leading, spacing: 8) {
@@ -830,7 +1016,7 @@ struct AscensionNotesRootView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.red)
                 Spacer()
-                Text("Click a suggestion to fix or Learn into Apple Dictionary")
+                Text("Click a suggestion to fix, add Skip Vowels rule, or Learn")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -862,6 +1048,16 @@ struct AscensionNotesRootView: View {
 
                     Spacer()
 
+                    Button("Skip Vowels...") {
+                        store.openSkipVowelsPrompt(
+                            token: issue.word,
+                            rangeLocation: bodyStartOffset + issue.charOffset,
+                            rangeLength: max(0, issue.charEnd - issue.charOffset)
+                        )
+                    }
+                    .font(.caption2)
+                    .buttonStyle(.bordered)
+
                     Button("Learn") {
                         store.learnSpellcheckWord(issue.word)
                     }
@@ -873,18 +1069,31 @@ struct AscensionNotesRootView: View {
         .padding(.top, 6)
     }
 
-    private func highlightedCleanBodyText(for note: StoredNote, spellIssues: [SpellcheckIssue]) -> AttributedString {
+    private func highlightedCleanBodyText(
+        for note: StoredNote,
+        spellIssues: [SpellcheckIssue],
+        rangeOffset: Int? = nil,
+        rangeEnd: Int? = nil
+    ) -> AttributedString {
         let (bodyClean, bodyStartOffset) = cleanViewBodySlice(for: note)
+        let sliceStartOffset = max(0, min(rangeOffset ?? 0, bodyClean.count))
+        let sliceEndOffset = max(sliceStartOffset, min(rangeEnd ?? bodyClean.count, bodyClean.count))
 
-        var attributed = AttributedString(bodyClean)
+        let sliceStartIdx = bodyClean.index(bodyClean.startIndex, offsetBy: sliceStartOffset)
+        let sliceEndIdx = bodyClean.index(bodyClean.startIndex, offsetBy: sliceEndOffset)
+        let sliceText = String(bodyClean[sliceStartIdx..<sliceEndIdx])
+
+        var attributed = AttributedString(sliceText)
         attributed.font = .system(size: store.editorFontSize)
 
         for issue in spellIssues {
-            guard issue.charOffset >= 0,
-                  issue.charEnd <= bodyClean.count,
-                  issue.charOffset < issue.charEnd else { continue }
-            let startIdx = bodyClean.index(bodyClean.startIndex, offsetBy: issue.charOffset)
-            let endIdx = bodyClean.index(bodyClean.startIndex, offsetBy: issue.charEnd)
+            let ovStart = max(issue.charOffset, sliceStartOffset)
+            let ovEnd = min(issue.charEnd, sliceEndOffset)
+            guard ovStart < ovEnd else { continue }
+            let relS = ovStart - sliceStartOffset
+            let relE = ovEnd - sliceStartOffset
+            let startIdx = sliceText.index(sliceText.startIndex, offsetBy: relS)
+            let endIdx = sliceText.index(sliceText.startIndex, offsetBy: relE)
             if let attrRange = Range(startIdx..<endIdx, in: attributed) {
                 attributed[attrRange].underlineStyle = Text.LineStyle(pattern: .dot, color: .red)
             }
@@ -893,9 +1102,13 @@ struct AscensionNotesRootView: View {
         for hit in store.searchMatches(for: note) {
             let relStart = hit.normalizedOffset - bodyStartOffset
             let relEnd = hit.normalizedEnd - bodyStartOffset
-            guard relStart >= 0, relEnd <= bodyClean.count, relStart < relEnd else { continue }
-            let startIdx = bodyClean.index(bodyClean.startIndex, offsetBy: relStart)
-            let endIdx = bodyClean.index(bodyClean.startIndex, offsetBy: relEnd)
+            let ovStart = max(relStart, sliceStartOffset)
+            let ovEnd = min(relEnd, sliceEndOffset)
+            guard ovStart < ovEnd else { continue }
+            let localS = ovStart - sliceStartOffset
+            let localE = ovEnd - sliceStartOffset
+            let startIdx = sliceText.index(sliceText.startIndex, offsetBy: localS)
+            let endIdx = sliceText.index(sliceText.startIndex, offsetBy: localE)
             if let attrRange = Range(startIdx..<endIdx, in: attributed) {
                 attributed[attrRange].backgroundColor = notesGold.opacity(0.38)
             }
@@ -1235,6 +1448,127 @@ struct AscensionNotesRootView: View {
         NSPasteboard.general.setString(text, forType: .string)
         #elseif canImport(UIKit)
         UIPasteboard.general.string = text
+        #endif
+    }
+}
+
+struct SkipVowelsConfirmSheet: View {
+    @Bindable var store: NotesStore
+    let request: SkipVowelsPromptRequest
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var normalizedTarget: String
+
+    init(store: NotesStore, request: SkipVowelsPromptRequest) {
+        self.store = store
+        self.request = request
+        _normalizedTarget = State(initialValue: request.suggestedNormalized)
+    }
+
+    private var allSuggestions: [SkipVowelsSuggestion] {
+        let knownEntries = store.customRules.map { ($0.pattern, $0.replacement) }
+            + store.a3odexEntries.map { ($0.token, $0.canonical) }
+        let extraLexicon = store.a3odexEntries.map(\.canonical) + store.customRules.map(\.replacement)
+        return SkipVowelsHelper.suggestCleanForms(
+            for: request.token,
+            knownEntries: knownEntries,
+            extraLexicon: extraLexicon
+        )
+    }
+
+    private var trimmedTarget: String {
+        normalizedTarget.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 10) {
+                    Text(request.token)
+                        .font(.system(.title3, design: .monospaced).bold())
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(notesGold.opacity(0.18))
+                        .foregroundStyle(notesGold)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                    Image(systemName: "arrow.right")
+                        .foregroundStyle(.secondary)
+
+                    TextField("Normalized clean form", text: $normalizedTarget)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.body.weight(.medium))
+                }
+
+                if !allSuggestions.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Suggested Vowel-Restored Targets")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(allSuggestions) { sug in
+                                    Button {
+                                        normalizedTarget = sug.normalized
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Text(sug.normalized)
+                                            Text("(\(sug.source))")
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        .font(.caption)
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    if trimmedTarget == request.token {
+                        Label(
+                            "Matches raw token — learns \"\(request.token)\" in dictionary and clears red underline without changing Clean View.",
+                            systemImage: "checkmark.circle"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    } else {
+                        Label(
+                            "Saves MUNSC rule \"\(request.token)\" → \"\(trimmedTarget)\" (description: \"Skip vowels verified\") to munsc_rules.json and learns spelling.",
+                            systemImage: "checkmark.seal.fill"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.secondary.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                Spacer(minLength: 0)
+            }
+            .padding(20)
+            .navigationTitle("Verify \"Skip Vowels\" Rule")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Verify & Save") {
+                        _ = store.addSkipVowelsRule(token: request.token, normalized: trimmedTarget)
+                        dismiss()
+                    }
+                    .disabled(trimmedTarget.isEmpty)
+                    .buttonStyle(.borderedProminent)
+                    .tint(notesGold)
+                }
+            }
+        }
+        #if os(macOS)
+        .frame(minWidth: 500, minHeight: 270)
         #endif
     }
 }
