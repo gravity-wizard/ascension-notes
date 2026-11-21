@@ -388,27 +388,29 @@ final class NotesStore {
 
         activeSyncFolderURL = targetDir
         UserDefaults.standard.set(targetDir.path, forKey: Self.syncFolderDefaultsKey)
-        #if os(macOS)
-        if let bookmark = try? targetDir.bookmarkData(
-            options: .withSecurityScope,
-            includingResourceValuesForKeys: nil,
-            relativeTo: nil
-        ) {
-            UserDefaults.standard.set(bookmark, forKey: Self.syncFolderBookmarkKey)
-        } else {
-            UserDefaults.standard.removeObject(forKey: Self.syncFolderBookmarkKey)
+        withFolderAccess(targetDir) {
+            #if os(macOS)
+            if let bookmark = try? targetDir.bookmarkData(
+                options: .withSecurityScope,
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            ) {
+                UserDefaults.standard.set(bookmark, forKey: Self.syncFolderBookmarkKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.syncFolderBookmarkKey)
+            }
+            #else
+            if let bookmark = try? targetDir.bookmarkData(
+                options: [],
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            ) {
+                UserDefaults.standard.set(bookmark, forKey: Self.syncFolderBookmarkKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.syncFolderBookmarkKey)
+            }
+            #endif
         }
-        #else
-        if let bookmark = try? targetDir.bookmarkData(
-            options: [],
-            includingResourceValuesForKeys: nil,
-            relativeTo: nil
-        ) {
-            UserDefaults.standard.set(bookmark, forKey: Self.syncFolderBookmarkKey)
-        } else {
-            UserDefaults.standard.removeObject(forKey: Self.syncFolderBookmarkKey)
-        }
-        #endif
 
         let targetExists = withFolderAccess(targetDir) {
             (
