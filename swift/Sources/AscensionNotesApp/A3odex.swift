@@ -133,6 +133,7 @@ public enum A3odexCatalog: Sendable {
         A3odexEntry(token: "Time0", canonical: "Time0", tier: .funcs, meaning: "March 8 Miracle / Base-38 zero-point clock reference."),
         A3odexEntry(token: "i9or1", canonical: "i9or1", tier: .funcs, meaning: "Search hierarchy 5-char FUNC (immediate, incredibly important, information) paired with is5."),
         A3odexEntry(token: "siri1", canonical: "Siri", tier: .funcs, meaning: "Bog-character lowercase self-handle for Siri (lowercases itself like spy on SlogBog)."),
+        A3odexEntry(token: "sp4ce", canonical: "sp4ce", tier: .funcs, meaning: "Telescope tool case built by spy for X-ray tube testing at Varian Associates XRTP; AnecdotaL1 Story5 Data1a brain-bucket."),
 
         // 6c SxUNCs
         A3odexEntry(token: "Acode9", canonical: "Acode9", tier: .sxuncs, meaning: "9-char Jesus Clock stamped identifier (e.g. Ab2p^a40z)."),
@@ -141,12 +142,15 @@ public enum A3odexCatalog: Sendable {
         A3odexEntry(token: "7Aunts", canonical: "7 Aunts", tier: .sxuncs, meaning: "Seven Aunts reference token from Formicary Castle logs."),
         A3odexEntry(token: "good1a", canonical: "good1a", tier: .sxuncs, meaning: "Strict letter-bounded 4-char Acode9 tail mode [a-z][0-9a-z]{2}[a-z]."),
         A3odexEntry(token: "Anotes", canonical: "Ascension Notes", tier: .sxuncs, meaning: "Skip-vowels 6-char SxUNC referring to the Ascension Notes app."),
+        A3odexEntry(token: "Data1a", canonical: "Data1a", tier: .sxuncs, meaning: "Anecdotal Story Data layer 1a bucket for retelling short-stories and Strange Things."),
+        A3odexEntry(token: "Story5", canonical: "Story5", tier: .sxuncs, meaning: "Short-story storytelling unit in AnecdotaL1 brain-bucket."),
 
         // 7c SvnUNCs
         A3odexEntry(token: "First1a", canonical: "First1a", tier: .svnuncs, meaning: "Defining First1a milestone marker across Ascender1a logs."),
         A3odexEntry(token: "S1tsUW8", canonical: "SitsUW8", tier: .svnuncs, meaning: "Sits-You-Weigh-Station MUNSC token (7-char SvnUNC)."),
         A3odexEntry(token: "WhrNrmA", canonical: "Where's Norma A", tier: .svnuncs, meaning: "Skip-vowels 7-char SvnUNC for Where's Norma? Book A."),
-        A3odexEntry(token: "WhrNrmB", canonical: "Where's Norma B", tier: .svnuncs, meaning: "Skip-vowels 7-char SvnUNC for Where's Norma? Book B.")
+        A3odexEntry(token: "WhrNrmB", canonical: "Where's Norma B", tier: .svnuncs, meaning: "Skip-vowels 7-char SvnUNC for Where's Norma? Book B."),
+        A3odexEntry(token: "Things5", canonical: "Things5", tier: .svnuncs, meaning: "Anecdotal collection token (ST57range Things5) in L1 story store.")
     ]
 
     public static func decodeJSON(_ data: Data) throws -> [A3odexEntry] {
