@@ -70,6 +70,7 @@ jobs:
           server: ${{ secrets.HOSTINGER_FTP_SERVER }}
           username: ${{ secrets.HOSTINGER_FTP_USERNAME }}
           password: ${{ secrets.HOSTINGER_FTP_PASSWORD }}
+          protocol: ftps
           local-dir: web/dist/hostinger-public_html/
           server-dir: ${{ steps.cfg.outputs.ftp_dir }}
           exclude: |
