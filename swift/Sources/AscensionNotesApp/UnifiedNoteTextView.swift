@@ -918,9 +918,24 @@ final class AscensionNSTextView: NSTextView {
         let lineText = ns.substring(with: lineRange).trimmingCharacters(in: .newlines)
         guard !lineText.isEmpty else { return }
 
-        let count = max(2, Int(round(Double(lineText.count) / 7.0)))
-        let top = Array(repeating: "🔻🔻", count: count).joined(separator: "   ")
-        let bottom = Array(repeating: "🔺🔺", count: count).joined(separator: "   ")
+        let activeFont = font ?? NSFont.systemFont(ofSize: CGFloat(coordinator?.store.editorFontSize ?? 15.0))
+        let targetWidth = (lineText as NSString).size(withAttributes: [.font: activeFont]).width
+
+        // Measure actual font pixel width to find the exact pair count that balances the line
+        var bestCount = 2
+        var bestDiff = Double.infinity
+        for count in 2...32 {
+            let candidate = Array(repeating: "🔻🔻", count: count).joined(separator: "   ")
+            let candidateWidth = (candidate as NSString).size(withAttributes: [.font: activeFont]).width
+            let diff = abs(candidateWidth - targetWidth)
+            if diff < bestDiff {
+                bestDiff = diff
+                bestCount = count
+            }
+        }
+
+        let top = Array(repeating: "🔻🔻", count: bestCount).joined(separator: "   ")
+        let bottom = Array(repeating: "🔺🔺", count: bestCount).joined(separator: "   ")
         let replacement = "\(top)\n\(lineText)\n\(bottom)\n"
 
         if shouldChangeText(in: lineRange, replacementString: replacement) {
@@ -941,47 +956,11 @@ final class AscensionNSTextView: NSTextView {
         } else {
             textToCopy = string
         }
-        // Expand any tabs to 3 spaces so Apple Notes' 28pt tab grid never collapses consecutive ditto pairs
+        // Expand any raw tabs to 3 spaces so Apple Notes never collapses tabs into 🔻🔻🔻🔻
         let cleanText = textToCopy.replacingOccurrences(of: "\t", with: "   ")
         let pb = NSPasteboard.general
         pb.clearContents()
-        pb.setString(cleanText, forType: .string)
-
-        // Write RTF with spaces to guarantee rich-text paste into Apple Notes maintains equal length
-        let attr = NSMutableAttributedString(string: cleanText)
-        let defaultBody = CGFloat(coordinator?.store.editorFontSize ?? 15.0)
-        let font = NSFont.systemFont(ofSize: defaultBody)
-        let paragraph = UnifiedNoteTextView.createStandardParagraphStyle()
-        attr.addAttributes([.font: font, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph], range: NSRange(location: 0, length: (cleanText as NSString).length))
-        if let rtfData = try? attr.data(from: NSRange(location: 0, length: (cleanText as NSString).length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]) {
-            pb.setData(rtfData, forType: .rtf)
-        }
-    }
-
-    override func copy(_ sender: Any?) {
-        super.copy(sender)
-        let sel = selectedRange()
-        let ns = string as NSString
-        let textToCopy: String
-        if sel.location != NSNotFound && sel.length > 0 && sel.location + sel.length <= ns.length {
-            textToCopy = ns.substring(with: sel)
-        } else {
-            textToCopy = string
-        }
-        // Expand tabs on copy to prevent Apple Notes 28pt tab grid from collapsing consecutive ditto pairs
-        let cleanText = textToCopy.replacingOccurrences(of: "\t", with: "   ")
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        pb.setString(cleanText, forType: .string)
-
-        let attr = NSMutableAttributedString(string: cleanText)
-        let defaultBody = CGFloat(coordinator?.store.editorFontSize ?? 15.0)
-        let font = NSFont.systemFont(ofSize: defaultBody)
-        let paragraph = UnifiedNoteTextView.createStandardParagraphStyle()
-        attr.addAttributes([.font: font, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph], range: NSRange(location: 0, length: (cleanText as NSString).length))
-        if let rtfData = try? attr.data(from: NSRange(location: 0, length: (cleanText as NSString).length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]) {
-            pb.setData(rtfData, forType: .rtf)
-        }
+        pb.writeObjects([cleanText as NSString])
     }
 
     func ensureFullLayoutAndFrame() {
