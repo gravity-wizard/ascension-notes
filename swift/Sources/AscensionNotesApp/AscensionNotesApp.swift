@@ -19,21 +19,51 @@ private let notesGold = Color(red: 0.90, green: 0.64, blue: 0.08)
 @MainActor
 final class MacAppDelegate: NSObject, NSApplicationDelegate {
     var onWillTerminate: (() -> Void)?
+    var onEnsureMainWindow: (() -> Void)?
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSApplication.shared.setActivationPolicy(.regular)
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApplication.shared.setActivationPolicy(.regular)
-        NSApplication.shared.activate(ignoringOtherApps: true)
+        activateAndBringWindowsForward()
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            self?.activateAndBringWindowsForward()
+            try? await Task.sleep(for: .milliseconds(250))
+            guard let self else { return }
+            let hasVisibleMain = NSApplication.shared.windows.contains {
+                $0.isVisible && $0.canBecomeMain && $0.identifier?.rawValue != "help"
+            }
+            if !hasVisibleMain {
+                self.onEnsureMainWindow?()
+            }
+            self.activateAndBringWindowsForward()
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag {
-            sender.windows.first?.makeKeyAndOrderFront(nil)
+            onEnsureMainWindow?()
         }
+        activateAndBringWindowsForward()
         return true
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         onWillTerminate?()
+    }
+
+    func activateAndBringWindowsForward() {
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.activate()
+        for window in NSApplication.shared.windows where window.canBecomeMain && window.identifier?.rawValue != "help" {
+            if window.isMiniaturized {
+                window.deminiaturize(nil)
+            }
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+        }
     }
 }
 
@@ -86,15 +116,8 @@ struct AscensionNotesApp: App {
     #endif
     @State private var store = NotesStore()
 
-    init() {
-        #if os(macOS)
-        NSApplication.shared.setActivationPolicy(.regular)
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        #endif
-    }
-
     var body: some Scene {
-        WindowGroup("Ascension Notes") {
+        WindowGroup("Ascension Notes", id: "main") {
             AscensionNotesRootView(store: store)
                 #if os(macOS)
                 .frame(minWidth: 940, minHeight: 600)
@@ -103,9 +126,10 @@ struct AscensionNotesApp: App {
                     appDelegate.onWillTerminate = { [weak currentStore] in
                         currentStore?.save()
                     }
-                    NSApplication.shared.setActivationPolicy(.regular)
-                    NSApplication.shared.activate(ignoringOtherApps: true)
-                    NSApp.windows.first?.makeKeyAndOrderFront(nil)
+                    appDelegate.onEnsureMainWindow = { [openWindow] in
+                        openWindow(id: "main")
+                    }
+                    appDelegate.activateAndBringWindowsForward()
                 }
                 #endif
         }
