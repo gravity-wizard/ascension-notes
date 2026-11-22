@@ -74,6 +74,12 @@ public struct NoteAttachment: Codable, Identifiable, Hashable, Sendable {
     public var pixelWidth: Int
     public var pixelHeight: Int
     public var createdAt: Date
+    public var exactUnixTimestamp: Int64?
+    public var base38TimestampTag: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, filename, relativePath, pixelWidth, pixelHeight, createdAt, exactUnixTimestamp, base38TimestampTag
+    }
 
     public var shortID: String {
         String(id.uuidString.prefix(4)).lowercased()
@@ -92,7 +98,9 @@ public struct NoteAttachment: Codable, Identifiable, Hashable, Sendable {
         relativePath: String,
         pixelWidth: Int,
         pixelHeight: Int,
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        exactUnixTimestamp: Int64? = nil,
+        base38TimestampTag: String? = nil
     ) {
         self.id = id
         self.filename = filename
@@ -100,6 +108,20 @@ public struct NoteAttachment: Codable, Identifiable, Hashable, Sendable {
         self.pixelWidth = pixelWidth
         self.pixelHeight = pixelHeight
         self.createdAt = createdAt
+        self.exactUnixTimestamp = exactUnixTimestamp
+        self.base38TimestampTag = base38TimestampTag
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        filename = try c.decode(String.self, forKey: .filename)
+        relativePath = try c.decode(String.self, forKey: .relativePath)
+        pixelWidth = try c.decode(Int.self, forKey: .pixelWidth)
+        pixelHeight = try c.decode(Int.self, forKey: .pixelHeight)
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        exactUnixTimestamp = try c.decodeIfPresent(Int64.self, forKey: .exactUnixTimestamp)
+        base38TimestampTag = try c.decodeIfPresent(String.self, forKey: .base38TimestampTag)
     }
 }
 
@@ -1583,7 +1605,9 @@ final class NotesStore {
         pngData: Data,
         filename: String,
         pixelWidth: Int,
-        pixelHeight: Int
+        pixelHeight: Int,
+        exactUnixTimestamp: Int64? = nil,
+        base38TimestampTag: String? = nil
     ) -> NoteAttachment? {
         guard let id = selectedNote?.id,
               let idx = notes.firstIndex(where: { $0.id == id }) else { return nil }
@@ -1605,8 +1629,15 @@ final class NotesStore {
         }
         guard writeSucceeded else { return nil }
 
+        let resolvedTs = exactUnixTimestamp ?? Int64(Date().timeIntervalSince1970)
+        let resolvedTag = base38TimestampTag ?? Base38Clock.cleanExactClockExpression(
+            unixSeconds: resolvedTs,
+            contextWords: [filename],
+            maxLength: 17
+        ).expression
+
         let cleanName = filename.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "Screenshot-\(String(attachmentID.uuidString.prefix(4)).lowercased()).png"
+            ? "Capture \(resolvedTag).png"
             : filename.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let attachment = NoteAttachment(
@@ -1615,7 +1646,9 @@ final class NotesStore {
             relativePath: relativePath,
             pixelWidth: max(1, pixelWidth),
             pixelHeight: max(1, pixelHeight),
-            createdAt: Date()
+            createdAt: Date(),
+            exactUnixTimestamp: resolvedTs,
+            base38TimestampTag: resolvedTag
         )
         notes[idx].attachments.append(attachment)
         notes[idx].updatedAt = Date()
@@ -1756,6 +1789,82 @@ final class NotesStore {
         }
     }
     #endif
+
+    @discardableResult
+    func smartRenameAttachment(
+        _ attachment: NoteAttachment,
+        in noteID: UUID,
+        subjectInput: String,
+        appendBase38Tag: Bool = true
+    ) -> NoteAttachment? {
+        let trimmedSubject = subjectInput
+            .replacingOccurrences(of: ".png", with: "", options: .caseInsensitive)
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let exactTs = attachment.exactUnixTimestamp ?? Int64(attachment.createdAt.timeIntervalSince1970)
+        let contextWords = trimmedSubject.components(separatedBy: CharacterSet.alphanumerics.inverted)
+        let clockExpr = Base38Clock.cleanExactClockExpression(
+            unixSeconds: exactTs,
+            contextWords: contextWords,
+            maxLength: 17
+        ).expression
+
+        let finalStem: String
+        if trimmedSubject.isEmpty {
+            finalStem = "Capture \(clockExpr)"
+        } else if appendBase38Tag && !trimmedSubject.contains(clockExpr) {
+            finalStem = "\(trimmedSubject) \(clockExpr)"
+        } else {
+            finalStem = trimmedSubject
+        }
+        return renameAttachment(
+            attachment,
+            in: noteID,
+            newFilename: "\(finalStem).png",
+            exactUnixTimestamp: exactTs,
+            base38TimestampTag: clockExpr
+        )
+    }
+
+    @discardableResult
+    func renameAttachment(
+        _ attachment: NoteAttachment,
+        in noteID: UUID,
+        newFilename: String,
+        exactUnixTimestamp: Int64? = nil,
+        base38TimestampTag: String? = nil
+    ) -> NoteAttachment? {
+        guard let idx = notes.firstIndex(where: { $0.id == noteID }),
+              let attIdx = notes[idx].attachments.firstIndex(where: { $0.id == attachment.id }) else {
+            return nil
+        }
+        let clean = newFilename
+            .replacingOccurrences(of: "]", with: ")")
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return nil }
+
+        let oldMarker = notes[idx].attachments[attIdx].markerText
+        notes[idx].attachments[attIdx].filename = clean
+        if let exactUnixTimestamp {
+            notes[idx].attachments[attIdx].exactUnixTimestamp = exactUnixTimestamp
+        }
+        if let base38TimestampTag {
+            notes[idx].attachments[attIdx].base38TimestampTag = base38TimestampTag
+        }
+        let updated = notes[idx].attachments[attIdx]
+        let newMarker = updated.markerText
+
+        if oldMarker != newMarker && notes[idx].rawText.contains(oldMarker) {
+            notes[idx].rawText = notes[idx].rawText.replacingOccurrences(of: oldMarker, with: newMarker)
+        }
+        notes[idx].updatedAt = Date()
+        if activeLightboxRequest?.attachment.id == attachment.id {
+            activeLightboxRequest = RetinaLightboxRequest(noteID: noteID, attachment: updated)
+        }
+        save()
+        return updated
+    }
 
     func deleteAttachment(_ attachment: NoteAttachment, from noteID: UUID) {
         guard let idx = notes.firstIndex(where: { $0.id == noteID }) else { return }

@@ -24,9 +24,11 @@ from ascension import (
     AscensionNotesStore,
     MUNSCRule,
     NoteAttachment,
+    clean_exact_clock_expression,
     clock2_from_timestamp,
     consonant_skeleton,
     decode_base38,
+    decode_clock_expression,
     decode_jesus_clock,
     encode_base38,
     from_url_safe_base38,
@@ -34,8 +36,11 @@ from ascension import (
     generate_rolling_pool,
     is_clean_clock,
     is_clean_id,
+    is_clean_lower_alnum_clock,
     is_i9or1_hierarchy_token,
+    is_lower_alnum_base38,
     jesus_clock,
+    jesus_clock_expression_to_datetime,
     jesus_clock_to_datetime,
     lead_letter_for_clock_char,
     load_custom_rules,
@@ -483,6 +488,74 @@ class SkipVowelsAndAttachmentTests(unittest.TestCase):
         self.assertIn("NormA meeting at SLC", md_raw)
         self.assertNotIn("---", md_raw)
         self.assertNotIn("<!-- AXIF:", md_raw)
+
+    def test_exact_clock_expression_msd_and_picture_word_math(self) -> None:
+        clean_ts = decode_jesus_clock("2p15ek")
+        clean_res = clean_exact_clock_expression(clean_ts, context_words=["tree"])
+        self.assertEqual(clean_res.expression, "2p15ek")
+        self.assertFalse(clean_res.used_arithmetic_workaround)
+        self.assertEqual(decode_clock_expression(clean_res.expression), clean_ts)
+
+        # Bad triple-6 timestamp ("2p7666") with picture context word ("gym") preserves MSD "2p7"
+        gym_ts = decode_jesus_clock("2p7666")
+        gym_res = clean_exact_clock_expression(gym_ts, context_words=["gym", "Air Derby"], max_length=17)
+        self.assertTrue(gym_res.used_arithmetic_workaround)
+        self.assertEqual(gym_res.context_word_used, "gym")
+        self.assertTrue(gym_res.expression.startswith("2p7"), gym_res.expression)
+        self.assertTrue(gym_res.expression.endswith("-gym") or gym_res.expression.endswith("+gym"))
+        self.assertLessEqual(len(gym_res.expression), 17)
+        self.assertEqual(decode_clock_expression(gym_res.expression), gym_ts)
+        lhs, rhs = gym_res.expression.replace("+", "-").split("-", 1)
+        self.assertTrue(is_clean_lower_alnum_clock(lhs))
+        self.assertTrue(is_clean_lower_alnum_clock(rhs))
+
+        # Blocked substring ("2p7fuk", "2shit1") and ^/| ("2p7|^a") stay <=17 chars, [0-9a-z], lossless
+        for raw_bad in ("2p7fuk", "2shit1", "2p7|^a"):
+            ts = decode_jesus_clock(raw_bad)
+            res = clean_exact_clock_expression(ts, context_words=["Weeping", "willow", "tree"], max_length=17)
+            self.assertTrue(res.used_arithmetic_workaround)
+            self.assertLessEqual(len(res.expression), 17)
+            self.assertNotIn("^", res.expression)
+            self.assertNotIn("|", res.expression)
+            self.assertEqual(decode_clock_expression(res.expression), ts)
+            self.assertEqual(int(jesus_clock_expression_to_datetime(res.expression).timestamp()), ts)
+
+        # Explicit round-anchor check for "2p5000-334"
+        expected_2p5000_minus_334 = decode_jesus_clock("2p5000") - decode_base38("334")
+        self.assertEqual(decode_clock_expression("2p5000-334"), expected_2p5000_minus_334)
+
+    def test_smart_retitled_attachment_metadata(self) -> None:
+        ts = decode_jesus_clock("2p7666")
+        expr = clean_exact_clock_expression(ts, context_words=["gym"]).expression
+        att = NoteAttachment(
+            id="c0ffee12-0000-0000-0000-000000000001",
+            filename=f"Air Derby {expr}.png",
+            relative_path="attachments/c0ffee12-0000-0000-0000-000000000001.png",
+            pixel_width=2400,
+            pixel_height=1600,
+            exact_unix_timestamp=ts,
+            base38_timestamp_tag=expr,
+        )
+        raw_dict = att.to_dict()
+        restored = NoteAttachment.from_dict(raw_dict)
+        self.assertEqual(restored.exact_unix_timestamp, ts)
+        self.assertEqual(restored.base38_timestamp_tag, expr)
+        self.assertEqual(restored.marker_text, f"▸[Image: Air Derby {expr}.png #c0ff]")
+
+        # Swift camelCase round-trip
+        swift_style = NoteAttachment.from_dict(
+            {
+                "id": "abcdef01-0000-0000-0000-000000000002",
+                "filename": f"Weeping WilLoW Tree {expr}.png",
+                "relativePath": "attachments/abcdef01-0000-0000-0000-000000000002.png",
+                "pixelWidth": 1920,
+                "pixelHeight": 1080,
+                "exactUnixTimestamp": ts,
+                "base38TimestampTag": expr,
+            }
+        )
+        self.assertEqual(swift_style.exact_unix_timestamp, ts)
+        self.assertEqual(swift_style.base38_timestamp_tag, expr)
 
 
 if __name__ == "__main__":

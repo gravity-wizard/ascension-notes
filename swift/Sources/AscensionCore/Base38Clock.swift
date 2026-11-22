@@ -210,4 +210,257 @@ public enum Base38Clock: Sendable {
     public static func clock2(for date: Date = Date(), urlSafe: Bool = false) -> String {
         clock2(unixSeconds: Int64(date.timeIntervalSince1970), urlSafe: urlSafe)
     }
+
+    // MARK: - Exact-Time Base-38 Arithmetic Workaround (Preserves MSDs & Uses Clean Lowercase)
+
+    public struct ExactClockExpression: Codable, Hashable, Sendable {
+        public let expression: String
+        public let rawClock: String
+        public let usedArithmeticWorkaround: Bool
+        public let preservedMSDPrefix: String
+        public let contextWordUsed: String?
+        public let unixSeconds: Int64
+
+        public init(
+            expression: String,
+            rawClock: String,
+            usedArithmeticWorkaround: Bool,
+            preservedMSDPrefix: String,
+            contextWordUsed: String?,
+            unixSeconds: Int64
+        ) {
+            self.expression = expression
+            self.rawClock = rawClock
+            self.usedArithmeticWorkaround = usedArithmeticWorkaround
+            self.preservedMSDPrefix = preservedMSDPrefix
+            self.contextWordUsed = contextWordUsed
+            self.unixSeconds = unixSeconds
+        }
+    }
+
+    private static let fallbackExactWords: [String] = [
+        "sun", "sky", "joy", "art", "oak", "dew", "zen", "ace", "ray", "gem",
+        "arc", "way", "key", "orb", "day", "era", "leaf", "peak", "pine", "wave",
+        "moon", "glow", "hope", "love", "wind", "rain", "song", "book", "seed", "star",
+        "calm", "home", "tree", "bird", "gold", "pure", "true", "wise", "good", "life"
+    ]
+
+    public static func isLowerAlnumBase38(_ value: String) -> Bool {
+        guard !value.isEmpty else { return false }
+        return value.allSatisfy { ($0 >= "0" && $0 <= "9") || ($0 >= "a" && $0 <= "z") }
+    }
+
+    public static func isCleanLowerAlnumClock(_ value: String, blockedSubstrings: [String]? = nil) -> Bool {
+        isLowerAlnumBase38(value) && isCleanClock(value, blockedSubstrings: blockedSubstrings)
+    }
+
+    /// Formats an exact Unix timestamp as a clean lowercase Base-38 tag (<= maxLength chars).
+    /// When the raw Base-38 string hits "666", a blocked word, or non-alnum symbols (^/|),
+    /// keeps the leading MSDs intact and emits a pretty lossless arithmetic formula
+    /// like `2p7n2s-gym` (using picture/context words first) or `2p7xx+word`.
+    public static func cleanExactClockExpression(
+        unixSeconds: Int64 = Int64(Date().timeIntervalSince1970),
+        contextWords: [String] = [],
+        maxLength: Int = 17,
+        blockedSubstrings: [String]? = nil
+    ) -> ExactClockExpression {
+        let clampedUnix = max(t0Unix, unixSeconds)
+        let elapsed = clampedUnix - t0Unix
+        let rawClock = (try? encode(elapsed)) ?? "0"
+
+        if rawClock.count <= maxLength,
+           isCleanLowerAlnumClock(rawClock, blockedSubstrings: blockedSubstrings) {
+            return ExactClockExpression(
+                expression: rawClock,
+                rawClock: rawClock,
+                usedArithmeticWorkaround: false,
+                preservedMSDPrefix: rawClock,
+                contextWordUsed: nil,
+                unixSeconds: clampedUnix
+            )
+        }
+
+        // Extract clean 2...6-char lowercase [a-z] picture words from contextWords
+        var normalizedWords: [String] = []
+        var seenWords: Set<String> = []
+        for rawWord in contextWords {
+            let parts = rawWord
+                .lowercased()
+                .split { !($0 >= "a" && $0 <= "z") }
+                .map(String.init)
+            for part in parts where part.count >= 2 && part.count <= 6 {
+                if !seenWords.contains(part) && isCleanLowerAlnumClock(part, blockedSubstrings: blockedSubstrings) {
+                    seenWords.insert(part)
+                    normalizedWords.append(part)
+                }
+            }
+        }
+
+        var wordPool = normalizedWords
+        for fallback in fallbackExactWords where !seenWords.contains(fallback) {
+            if isCleanLowerAlnumClock(fallback, blockedSubstrings: blockedSubstrings) {
+                seenWords.insert(fallback)
+                wordPool.append(fallback)
+            }
+        }
+
+        // Determine candidate MSD prefixes from longest clean prefix down to 0
+        let rawChars = Array(rawClock)
+        let maxMSD = max(0, min(3, rawChars.count - 2))
+        var msdCandidates: [String] = []
+        if maxMSD >= 1 {
+            for len in stride(from: maxMSD, through: 1, by: -1) {
+                let prefix = String(rawChars.prefix(len))
+                if isCleanLowerAlnumClock(prefix, blockedSubstrings: blockedSubstrings) {
+                    msdCandidates.append(prefix)
+                }
+            }
+        }
+        msdCandidates.append("")
+
+        for msdPrefix in msdCandidates {
+            // 1. Try picture/context & wholesome words (anchor - word, then anchor + word)
+            for word in wordPool {
+                guard let rhsVal = try? decode(word), rhsVal > 0 else { continue }
+
+                // Try subtraction: (elapsed + rhsVal) - word == elapsed
+                let plusAnchorVal = elapsed + rhsVal
+                if let plusAnchor = try? encode(plusAnchorVal),
+                   plusAnchor.hasPrefix(msdPrefix),
+                   isCleanLowerAlnumClock(plusAnchor, blockedSubstrings: blockedSubstrings) {
+                    let expr = "\(plusAnchor)-\(word)"
+                    if expr.count <= maxLength {
+                        return ExactClockExpression(
+                            expression: expr,
+                            rawClock: rawClock,
+                            usedArithmeticWorkaround: true,
+                            preservedMSDPrefix: msdPrefix,
+                            contextWordUsed: word,
+                            unixSeconds: clampedUnix
+                        )
+                    }
+                }
+
+                // Try addition: (elapsed - rhsVal) + word == elapsed
+                if elapsed >= rhsVal {
+                    let minusAnchorVal = elapsed - rhsVal
+                    if let minusAnchor = try? encode(minusAnchorVal),
+                       minusAnchor.hasPrefix(msdPrefix),
+                       isCleanLowerAlnumClock(minusAnchor, blockedSubstrings: blockedSubstrings) {
+                        let expr = "\(minusAnchor)+\(word)"
+                        if expr.count <= maxLength {
+                            return ExactClockExpression(
+                                expression: expr,
+                                rawClock: rawClock,
+                                usedArithmeticWorkaround: true,
+                                preservedMSDPrefix: msdPrefix,
+                                contextWordUsed: word,
+                                unixSeconds: clampedUnix
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 2. Numeric Base-38 tiny delta fallback preserving MSDs
+            for step in Int64(1)...Int64(400) {
+                guard let delta = try? encode(step),
+                      isCleanLowerAlnumClock(delta, blockedSubstrings: blockedSubstrings) else {
+                    continue
+                }
+                if let plusAnchor = try? encode(elapsed + step),
+                   plusAnchor.hasPrefix(msdPrefix),
+                   isCleanLowerAlnumClock(plusAnchor, blockedSubstrings: blockedSubstrings) {
+                    let expr = "\(plusAnchor)-\(delta)"
+                    if expr.count <= maxLength {
+                        return ExactClockExpression(
+                            expression: expr,
+                            rawClock: rawClock,
+                            usedArithmeticWorkaround: true,
+                            preservedMSDPrefix: msdPrefix,
+                            contextWordUsed: nil,
+                            unixSeconds: clampedUnix
+                        )
+                    }
+                }
+                if elapsed >= step,
+                   let minusAnchor = try? encode(elapsed - step),
+                   minusAnchor.hasPrefix(msdPrefix),
+                   isCleanLowerAlnumClock(minusAnchor, blockedSubstrings: blockedSubstrings) {
+                    let expr = "\(minusAnchor)+\(delta)"
+                    if expr.count <= maxLength {
+                        return ExactClockExpression(
+                            expression: expr,
+                            rawClock: rawClock,
+                            usedArithmeticWorkaround: true,
+                            preservedMSDPrefix: msdPrefix,
+                            contextWordUsed: nil,
+                            unixSeconds: clampedUnix
+                        )
+                    }
+                }
+            }
+        }
+
+        // Last-resort safe fallback (never drops exact time)
+        let safe = safeJesusClock(unixSeconds: clampedUnix, minWidth: 1, urlSafe: false, blockedSubstrings: blockedSubstrings)
+        let delta = elapsed - (safe.effectiveUnix - t0Unix)
+        if delta > 0,
+           let deltaStr = try? encode(delta),
+           isLowerAlnumBase38(safe.clock),
+           isLowerAlnumBase38(deltaStr) {
+            let expr = "\(safe.clock)+\(deltaStr)"
+            return ExactClockExpression(
+                expression: expr,
+                rawClock: rawClock,
+                usedArithmeticWorkaround: true,
+                preservedMSDPrefix: "",
+                contextWordUsed: nil,
+                unixSeconds: clampedUnix
+            )
+        }
+
+        return ExactClockExpression(
+            expression: safe.clock,
+            rawClock: rawClock,
+            usedArithmeticWorkaround: safe.isPaused,
+            preservedMSDPrefix: "",
+            contextWordUsed: nil,
+            unixSeconds: safe.effectiveUnix
+        )
+    }
+
+    /// Evaluates either a plain Base-38 clock (`2p15ek`) or an arithmetic expression (`2p7n2s-gym`, `2p7k0a+joy`)
+    /// back into exact integer UTC Unix seconds.
+    public static func decodeClockExpression(_ expr: String) throws -> Int64 {
+        let trimmed = expr.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw Base38Error.emptyString
+        }
+        if let plusIdx = trimmed.firstIndex(of: "+") {
+            let lhs = String(trimmed[..<plusIdx])
+            let rhs = String(trimmed[trimmed.index(after: plusIdx)...])
+            let lhsVal = try decode(lhs)
+            let rhsVal = try decode(rhs)
+            return t0Unix + lhsVal + rhsVal
+        }
+        if let minusIdx = trimmed.firstIndex(of: "-") {
+            let lhs = String(trimmed[..<minusIdx])
+            let rhs = String(trimmed[trimmed.index(after: minusIdx)...])
+            if !lhs.isEmpty, !rhs.isEmpty,
+               isLowerAlnumBase38(lhs), isLowerAlnumBase38(rhs) {
+                let lhsVal = try decode(lhs)
+                let rhsVal = try decode(rhs)
+                if lhsVal >= rhsVal {
+                    return t0Unix + (lhsVal - rhsVal)
+                }
+            }
+        }
+        return try decodeJesusClock(trimmed)
+    }
+
+    public static func date(fromJesusClockExpression expr: String) throws -> Date {
+        let ts = try decodeClockExpression(expr)
+        return Date(timeIntervalSince1970: TimeInterval(ts))
+    }
 }

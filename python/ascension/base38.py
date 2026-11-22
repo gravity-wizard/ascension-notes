@@ -222,3 +222,205 @@ def clock2_from_timestamp(timestamp: TimestampLike = None, *, url_safe: bool = F
     """Return the first 2 Base-38 characters of the safe Jesus Clock."""
     reading = safe_jesus_clock(timestamp, min_width=2, url_safe=url_safe)
     return reading.clock[:2]
+
+
+@dataclass(frozen=True)
+class ExactClockExpression:
+    expression: str
+    raw_clock: str
+    used_arithmetic_workaround: bool
+    preserved_msd_prefix: str
+    context_word_used: str | None
+    unix_seconds: int
+
+
+_FALLBACK_EXACT_WORDS: tuple[str, ...] = (
+    "sun", "sky", "joy", "art", "oak", "dew", "zen", "ace", "ray", "gem",
+    "arc", "way", "key", "orb", "day", "era", "leaf", "peak", "pine", "wave",
+    "moon", "glow", "hope", "love", "wind", "rain", "song", "book", "seed", "star",
+    "calm", "home", "tree", "bird", "gold", "pure", "true", "wise", "good", "life",
+)
+
+
+def is_lower_alnum_base38(value: str) -> bool:
+    """Return True iff value is non-empty and consists solely of lowercase ASCII [0-9a-z]."""
+    return bool(value) and all(("0" <= ch <= "9") or ("a" <= ch <= "z") for ch in value)
+
+
+def is_clean_lower_alnum_clock(
+    value: str,
+    blocked_substrings: Iterable[str] | None = None,
+) -> bool:
+    """Return True iff value uses [0-9a-z] only and has no '666' or blocked substrings."""
+    return is_lower_alnum_base38(value) and is_clean_clock(value, blocked_substrings=blocked_substrings)
+
+
+def clean_exact_clock_expression(
+    timestamp: TimestampLike = None,
+    *,
+    context_words: Iterable[str] = (),
+    max_length: int = 17,
+    blocked_substrings: Iterable[str] | None = None,
+) -> ExactClockExpression:
+    """Format an exact timestamp as clean lowercase Base-38 (<= max_length chars).
+
+    When the raw Base-38 value contains '666', a blocked word, or '^'/'|', keeps the leading
+    MSDs intact and returns a pretty lossless formula like '2p7n2s-gym' or '2p7k0a+joy'.
+    """
+    clamped_unix = max(T0UX, coerce_unix_timestamp(timestamp))
+    elapsed = clamped_unix - T0UX
+    raw_clock = encode_base38(elapsed)
+
+    if len(raw_clock) <= max_length and is_clean_lower_alnum_clock(
+        raw_clock, blocked_substrings=blocked_substrings
+    ):
+        return ExactClockExpression(
+            expression=raw_clock,
+            raw_clock=raw_clock,
+            used_arithmetic_workaround=False,
+            preserved_msd_prefix=raw_clock,
+            context_word_used=None,
+            unix_seconds=clamped_unix,
+        )
+
+    import re
+
+    word_pool: list[str] = []
+    seen: set[str] = set()
+    for raw_word in context_words:
+        for part in re.findall(r"[a-z]{2,6}", raw_word.lower()):
+            if part not in seen and is_clean_lower_alnum_clock(part, blocked_substrings=blocked_substrings):
+                seen.add(part)
+                word_pool.append(part)
+
+    for fallback in _FALLBACK_EXACT_WORDS:
+        if fallback not in seen and is_clean_lower_alnum_clock(fallback, blocked_substrings=blocked_substrings):
+            seen.add(fallback)
+            word_pool.append(fallback)
+
+    max_msd = max(0, min(3, len(raw_clock) - 2))
+    msd_candidates: list[str] = []
+    for length in range(max_msd, 0, -1):
+        prefix = raw_clock[:length]
+        if is_clean_lower_alnum_clock(prefix, blocked_substrings=blocked_substrings):
+            msd_candidates.append(prefix)
+    msd_candidates.append("")
+
+    for msd_prefix in msd_candidates:
+        for word in word_pool:
+            rhs_val = decode_base38(word)
+            if rhs_val <= 0:
+                continue
+
+            plus_anchor = encode_base38(elapsed + rhs_val)
+            if plus_anchor.startswith(msd_prefix) and is_clean_lower_alnum_clock(
+                plus_anchor, blocked_substrings=blocked_substrings
+            ):
+                expr = f"{plus_anchor}-{word}"
+                if len(expr) <= max_length:
+                    return ExactClockExpression(
+                        expression=expr,
+                        raw_clock=raw_clock,
+                        used_arithmetic_workaround=True,
+                        preserved_msd_prefix=msd_prefix,
+                        context_word_used=word,
+                        unix_seconds=clamped_unix,
+                    )
+
+            if elapsed >= rhs_val:
+                minus_anchor = encode_base38(elapsed - rhs_val)
+                if minus_anchor.startswith(msd_prefix) and is_clean_lower_alnum_clock(
+                    minus_anchor, blocked_substrings=blocked_substrings
+                ):
+                    expr = f"{minus_anchor}+{word}"
+                    if len(expr) <= max_length:
+                        return ExactClockExpression(
+                            expression=expr,
+                            raw_clock=raw_clock,
+                            used_arithmetic_workaround=True,
+                            preserved_msd_prefix=msd_prefix,
+                            context_word_used=word,
+                            unix_seconds=clamped_unix,
+                        )
+
+        for step in range(1, 401):
+            delta = encode_base38(step)
+            if not is_clean_lower_alnum_clock(delta, blocked_substrings=blocked_substrings):
+                continue
+
+            plus_anchor = encode_base38(elapsed + step)
+            if plus_anchor.startswith(msd_prefix) and is_clean_lower_alnum_clock(
+                plus_anchor, blocked_substrings=blocked_substrings
+            ):
+                expr = f"{plus_anchor}-{delta}"
+                if len(expr) <= max_length:
+                    return ExactClockExpression(
+                        expression=expr,
+                        raw_clock=raw_clock,
+                        used_arithmetic_workaround=True,
+                        preserved_msd_prefix=msd_prefix,
+                        context_word_used=None,
+                        unix_seconds=clamped_unix,
+                    )
+
+            if elapsed >= step:
+                minus_anchor = encode_base38(elapsed - step)
+                if minus_anchor.startswith(msd_prefix) and is_clean_lower_alnum_clock(
+                    minus_anchor, blocked_substrings=blocked_substrings
+                ):
+                    expr = f"{minus_anchor}+{delta}"
+                    if len(expr) <= max_length:
+                        return ExactClockExpression(
+                            expression=expr,
+                            raw_clock=raw_clock,
+                            used_arithmetic_workaround=True,
+                            preserved_msd_prefix=msd_prefix,
+                            context_word_used=None,
+                            unix_seconds=clamped_unix,
+                        )
+
+    safe = safe_jesus_clock(clamped_unix, min_width=1, url_safe=False, blocked_substrings=blocked_substrings)
+    delta = elapsed - (safe.effective_unix - T0UX)
+    if delta > 0:
+        delta_str = encode_base38(delta)
+        if is_lower_alnum_base38(safe.clock) and is_lower_alnum_base38(delta_str):
+            return ExactClockExpression(
+                expression=f"{safe.clock}+{delta_str}",
+                raw_clock=raw_clock,
+                used_arithmetic_workaround=True,
+                preserved_msd_prefix="",
+                context_word_used=None,
+                unix_seconds=clamped_unix,
+            )
+
+    return ExactClockExpression(
+        expression=safe.clock,
+        raw_clock=raw_clock,
+        used_arithmetic_workaround=safe.is_paused,
+        preserved_msd_prefix="",
+        context_word_used=None,
+        unix_seconds=safe.effective_unix,
+    )
+
+
+def decode_clock_expression(expr: str) -> int:
+    """Evaluate a plain Base-38 clock or arithmetic expression ('anchor-word' / 'anchor+word') to Unix seconds."""
+    trimmed = expr.strip()
+    if not trimmed:
+        raise ValueError("Base-38 clock expression must not be empty.")
+    if "+" in trimmed:
+        lhs, rhs = trimmed.split("+", 1)
+        return T0UX + decode_base38(lhs) + decode_base38(rhs)
+    if "-" in trimmed:
+        lhs, rhs = trimmed.split("-", 1)
+        if is_lower_alnum_base38(lhs) and is_lower_alnum_base38(rhs):
+            lhs_val = decode_base38(lhs)
+            rhs_val = decode_base38(rhs)
+            if lhs_val >= rhs_val:
+                return T0UX + (lhs_val - rhs_val)
+    return decode_jesus_clock(trimmed)
+
+
+def jesus_clock_expression_to_datetime(expr: str) -> datetime:
+    """Convert a Base-38 clock or arithmetic expression back into a UTC datetime."""
+    return datetime.fromtimestamp(decode_clock_expression(expr), tz=timezone.utc)

@@ -1,3 +1,4 @@
+import AscensionCore
 import Foundation
 
 #if canImport(SwiftUI)
@@ -7,6 +8,9 @@ import ImageIO
 #endif
 #if canImport(UniformTypeIdentifiers)
 import UniformTypeIdentifiers
+#endif
+#if canImport(Vision)
+import Vision
 #endif
 #if os(macOS)
 import AppKit
@@ -31,6 +35,8 @@ enum RetinaImageSupport {
         let pixelWidth: Int
         let pixelHeight: Int
         let filename: String
+        let exactUnixTimestamp: Int64
+        let base38Tag: String
     }
 
     static var currentBackingScale: CGFloat {
@@ -169,9 +175,9 @@ enum RetinaImageSupport {
     }
 
     private static func defaultScreenshotFilename() -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        return "Screenshot_\(formatter.string(from: Date())).png"
+        let now = Int64(Date().timeIntervalSince1970)
+        let tag = Base38Clock.cleanExactClockExpression(unixSeconds: now, contextWords: ["capture"], maxLength: 17).expression
+        return "Capture \(tag).png"
     }
 
     static func preparePNG(fromFileURL url: URL) -> PreparedPNG? {
@@ -183,13 +189,14 @@ enum RetinaImageSupport {
         let baseName = url.deletingPathExtension().lastPathComponent
         let filename = baseName.isEmpty ? defaultScreenshotFilename() : "\(baseName).png"
         let isPNG = url.pathExtension.lowercased() == "png"
-        return preparePNG(fromData: data, filename: filename, preserveRawPNG: isPNG)
+        return preparePNG(fromData: data, filename: filename, preserveRawPNG: isPNG, fileURL: url)
     }
 
     static func preparePNG(
         fromData data: Data,
         filename: String,
-        preserveRawPNG: Bool
+        preserveRawPNG: Bool,
+        fileURL: URL? = nil
     ) -> PreparedPNG? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
@@ -199,16 +206,37 @@ enum RetinaImageSupport {
         let pixelH = cgImage.height
         guard pixelW > 0, pixelH > 0 else { return nil }
 
+        let exactTs = SmartImageRetitler.extractExactUnixTimestamp(from: source, fileURL: fileURL)
+        let retitled = SmartImageRetitler.retitle(
+            cgImage: cgImage,
+            originalFilename: filename,
+            exactUnixTimestamp: exactTs
+        )
+
         let pngSignature: [UInt8] = [0x89, 0x50, 0x4E, 0x47]
         if preserveRawPNG && data.count >= 4 && Array(data.prefix(4)) == pngSignature {
-            return PreparedPNG(pngData: data, pixelWidth: pixelW, pixelHeight: pixelH, filename: filename)
+            return PreparedPNG(
+                pngData: data,
+                pixelWidth: pixelW,
+                pixelHeight: pixelH,
+                filename: retitled.filename,
+                exactUnixTimestamp: exactTs,
+                base38Tag: retitled.base38Tag
+            )
         }
 
         let rep = NSBitmapImageRep(cgImage: cgImage)
         guard let encoded = rep.representation(using: .png, properties: [:]) else {
             return nil
         }
-        return PreparedPNG(pngData: encoded, pixelWidth: pixelW, pixelHeight: pixelH, filename: filename)
+        return PreparedPNG(
+            pngData: encoded,
+            pixelWidth: pixelW,
+            pixelHeight: pixelH,
+            filename: retitled.filename,
+            exactUnixTimestamp: exactTs,
+            base38Tag: retitled.base38Tag
+        )
     }
 
     static func makeCrispNSImage(from data: Data, backingScale: CGFloat = currentBackingScale) -> NSImage? {
@@ -229,6 +257,238 @@ enum RetinaImageSupport {
     #endif
 }
 
+@MainActor
+enum SmartImageRetitler {
+    private static let boilerplatePrefixes = [
+        "screenshot", "screen shot", "screen recording", "cleanshot",
+        "img_", "dsc_", "pxl_", "mvimg_", "capture", "image", "photo", "paste"
+    ]
+
+    private static let genericVisionLabels: Set<String> = [
+        "structure", "material", "text", "screenshot", "computer", "display",
+        "screen", "graphics", "rectangle", "symbol", "sign", "font",
+        "document", "page", "design", "pattern", "indoor", "outdoor"
+    ]
+
+    private static let visionAliases: [String: String] = [
+        "gymnasium": "Gym",
+        "fitness_center": "Gym",
+        "weeping_willow": "Weeping Willow",
+        "willow": "Willow Tree"
+    ]
+
+    static func extractExactUnixTimestamp(from source: CGImageSource, fileURL: URL?) -> Int64 {
+        if let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
+
+            if let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any] {
+                for key in [kCGImagePropertyExifDateTimeOriginal, kCGImagePropertyExifDateTimeDigitized] {
+                    if let raw = exif[key] as? String, let parsed = formatter.date(from: raw) {
+                        return Int64(parsed.timeIntervalSince1970)
+                    }
+                }
+            }
+            if let tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any],
+               let raw = tiff[kCGImagePropertyTIFFDateTime] as? String,
+               let parsed = formatter.date(from: raw) {
+                return Int64(parsed.timeIntervalSince1970)
+            }
+        }
+
+        if let fileURL,
+           let values = try? fileURL.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey]),
+           let fileDate = values.creationDate ?? values.contentModificationDate {
+            return Int64(fileDate.timeIntervalSince1970)
+        }
+
+        return Int64(Date().timeIntervalSince1970)
+    }
+
+    static func isBoilerplateStem(_ stem: String) -> Bool {
+        let lower = stem.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if lower.isEmpty { return true }
+        for prefix in boilerplatePrefixes where lower.hasPrefix(prefix) {
+            return true
+        }
+        let compact = lower.replacingOccurrences(of: "-", with: "").replacingOccurrences(of: "_", with: "")
+        if compact.count >= 16 && compact.allSatisfy({ $0.isHexDigit }) {
+            return true
+        }
+        return false
+    }
+
+    static func retitle(
+        cgImage: CGImage,
+        originalFilename: String,
+        exactUnixTimestamp: Int64
+    ) -> (filename: String, base38Tag: String) {
+        let stem = (originalFilename as NSString).deletingPathExtension
+            .replacingOccurrences(of: "_", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let subject: String
+        var contextWords: [String] = []
+
+        if !isBoilerplateStem(stem) {
+            let cleaned = stem.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+            let capped = cleaned.count > 32 ? String(cleaned.prefix(32)).trimmingCharacters(in: .whitespaces) : cleaned
+            subject = capped.isEmpty ? "Capture" : capped
+            contextWords = subject.components(separatedBy: CharacterSet.alphanumerics.inverted)
+        } else {
+            let vision = detectVisionSubject(cgImage: cgImage)
+            subject = vision.subject
+            contextWords = vision.contextWords
+        }
+
+        let expr = Base38Clock.cleanExactClockExpression(
+            unixSeconds: exactUnixTimestamp,
+            contextWords: contextWords,
+            maxLength: 17
+        ).expression
+
+        if subject.contains(expr) {
+            return ("\(subject).png", expr)
+        }
+        return ("\(subject) \(expr).png", expr)
+    }
+
+    static func editableSubject(from filename: String, base38Tag: String?) -> String {
+        var stem = (filename as NSString).deletingPathExtension
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let tag = base38Tag, !tag.isEmpty, stem.hasSuffix(" \(tag)") {
+            stem = String(stem.dropLast(tag.count + 1))
+        }
+        return stem.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func detectVisionSubject(cgImage: CGImage) -> (subject: String, contextWords: [String]) {
+        #if canImport(Vision)
+        let classifyRequest = VNClassifyImageRequest()
+        let textRequest = VNRecognizeTextRequest()
+        textRequest.recognitionLevel = .fast
+        textRequest.usesLanguageCorrection = false
+
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        try? handler.perform([classifyRequest, textRequest])
+
+        var concreteLabels: [String] = []
+        if let results = classifyRequest.results {
+            for obs in results where obs.confidence >= 0.30 {
+                let rawID = obs.identifier.lowercased()
+                let human = visionAliases[rawID] ?? rawID
+                    .replacingOccurrences(of: "_", with: " ")
+                    .capitalized
+                let words = rawID.split(separator: "_").map(String.init)
+                if !words.contains(where: { genericVisionLabels.contains($0) }) {
+                    concreteLabels.append(human)
+                }
+                if concreteLabels.count >= 2 { break }
+            }
+        }
+
+        var ocrTitle: String? = nil
+        var ocrWords: [String] = []
+        if let textResults = textRequest.results {
+            for obs in textResults.prefix(6) {
+                guard let candidate = obs.topCandidates(1).first?.string else { continue }
+                let words = candidate
+                    .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                    .filter { $0.count >= 2 }
+                if words.count >= 1 && words.count <= 4 {
+                    let joined = words.prefix(3).joined(separator: " ")
+                    if joined.count >= 4 && joined.count <= 26 {
+                        ocrTitle = joined
+                        ocrWords = Array(words.prefix(4))
+                        break
+                    }
+                }
+            }
+        }
+
+        if let label = concreteLabels.first {
+            let context = label.components(separatedBy: CharacterSet.alphanumerics.inverted) + ocrWords
+            return (label, context)
+        }
+        if let ocrTitle {
+            return (ocrTitle, ocrWords)
+        }
+        #endif
+        return ("Capture", ["capture"])
+    }
+}
+
+struct RenameAttachmentPopover: View {
+    @Bindable var store: NotesStore
+    let noteID: UUID
+    let attachment: NoteAttachment
+    @Binding var isPresented: Bool
+
+    @State private var subjectDraft: String
+
+    init(store: NotesStore, noteID: UUID, attachment: NoteAttachment, isPresented: Binding<Bool>) {
+        self.store = store
+        self.noteID = noteID
+        self.attachment = attachment
+        self._isPresented = isPresented
+        _subjectDraft = State(
+            initialValue: SmartImageRetitler.editableSubject(
+                from: attachment.filename,
+                base38Tag: attachment.base38TimestampTag
+            )
+        )
+    }
+
+    private var previewTag: String {
+        let exactTs = attachment.exactUnixTimestamp ?? Int64(attachment.createdAt.timeIntervalSince1970)
+        let words = subjectDraft.components(separatedBy: CharacterSet.alphanumerics.inverted)
+        return Base38Clock.cleanExactClockExpression(
+            unixSeconds: exactTs,
+            contextWords: words,
+            maxLength: 17
+        ).expression
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("SMART ReTiT1e Image")
+                .font(.headline)
+            TextField("What is this image? (e.g. Weeping WilLoW Tree)", text: $subjectDraft)
+                .textFieldStyle(.roundedBorder)
+                .frame(minWidth: 280)
+
+            HStack(spacing: 6) {
+                Text("Tag (≤17 chars):")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(previewTag)
+                    .font(.caption.monospaced().bold())
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(retinaGold.opacity(0.18))
+                    .foregroundStyle(retinaGold)
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+            }
+
+            HStack {
+                Button("Cancel") {
+                    isPresented = false
+                }
+                Spacer()
+                Button("Save Title") {
+                    _ = store.smartRenameAttachment(attachment, in: noteID, subjectInput: subjectDraft)
+                    isPresented = false
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .tint(retinaGold)
+            }
+        }
+        .padding(14)
+    }
+}
+
 struct CrispAttachmentImageView: View {
     @Bindable var store: NotesStore
     let noteID: UUID
@@ -236,6 +496,7 @@ struct CrispAttachmentImageView: View {
     let maxDisplayHeight: CGFloat?
 
     @Environment(\.displayScale) private var displayScale
+    @State private var showRenamePopover: Bool = false
 
     private var loadedImage: CrispRetinaImage? {
         guard let data = store.readAttachmentData(for: attachment) else { return nil }
@@ -289,6 +550,23 @@ struct CrispAttachmentImageView: View {
                     .foregroundStyle(retinaGold)
 
                 Spacer()
+
+                Button {
+                    showRenamePopover = true
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.caption2)
+                }
+                .buttonStyle(.borderless)
+                .help("SMART ReTiT1e Image & Exact Base-38 Tag")
+                .popover(isPresented: $showRenamePopover) {
+                    RenameAttachmentPopover(
+                        store: store,
+                        noteID: noteID,
+                        attachment: attachment,
+                        isPresented: $showRenamePopover
+                    )
+                }
 
                 Button {
                     store.activeLightboxRequest = RetinaLightboxRequest(noteID: noteID, attachment: attachment)
@@ -395,6 +673,7 @@ struct RetinaLightboxSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.displayScale) private var displayScale
     @State private var zoomMode: ZoomMode = .fit
+    @State private var showRenamePopover: Bool = false
 
     private var loadedImage: CrispRetinaImage? {
         guard let data = store.readAttachmentData(for: request.attachment) else { return nil }
@@ -406,8 +685,19 @@ struct RetinaLightboxSheet: View {
             VStack(spacing: 0) {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(request.attachment.filename)
-                            .font(.headline)
+                        HStack(spacing: 8) {
+                            Text(request.attachment.filename)
+                                .font(.headline)
+                            if let tag = request.attachment.base38TimestampTag, !tag.isEmpty {
+                                Text(tag)
+                                    .font(.caption.monospaced().bold())
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(retinaGold.opacity(0.18))
+                                    .foregroundStyle(retinaGold)
+                                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                            }
+                        }
                         Text("\(request.attachment.pixelWidth) × \(request.attachment.pixelHeight) px • @\(Int(max(1, displayScale)))x Retina (\(Int(CGFloat(request.attachment.pixelWidth) / max(1, displayScale))) × \(Int(CGFloat(request.attachment.pixelHeight) / max(1, displayScale))) pt)")
                             .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
@@ -422,6 +712,22 @@ struct RetinaLightboxSheet: View {
                     }
                     .pickerStyle(.segmented)
                     .frame(maxWidth: 240)
+
+                    Button {
+                        showRenamePopover = true
+                    } label: {
+                        Label("Rename", systemImage: "pencil")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .popover(isPresented: $showRenamePopover) {
+                        RenameAttachmentPopover(
+                            store: store,
+                            noteID: request.noteID,
+                            attachment: request.attachment,
+                            isPresented: $showRenamePopover
+                        )
+                    }
 
                     #if os(macOS)
                     Button {

@@ -1350,7 +1350,9 @@ final class AscensionNSTextView: NSTextView {
                 pngData: item.pngData,
                 filename: item.filename,
                 pixelWidth: item.pixelWidth,
-                pixelHeight: item.pixelHeight
+                pixelHeight: item.pixelHeight,
+                exactUnixTimestamp: item.exactUnixTimestamp,
+                base38TimestampTag: item.base38Tag
             ) {
                 markers.append(saved.markerText)
             }

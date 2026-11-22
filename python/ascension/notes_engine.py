@@ -103,6 +103,8 @@ class NoteAttachment:
     pixel_width: int
     pixel_height: int
     created_at: str = ""
+    exact_unix_timestamp: int | None = None
+    base38_timestamp_tag: str | None = None
 
     @property
     def short_id(self) -> str:
@@ -114,7 +116,7 @@ class NoteAttachment:
         return f"▸[Image: {safe_name} #{self.short_id}]"
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "id": self.id,
             "filename": self.filename,
             "relative_path": self.relative_path,
@@ -122,9 +124,16 @@ class NoteAttachment:
             "pixel_height": self.pixel_height,
             "created_at": self.created_at,
         }
+        if self.exact_unix_timestamp is not None:
+            payload["exact_unix_timestamp"] = self.exact_unix_timestamp
+        if self.base38_timestamp_tag is not None:
+            payload["base38_timestamp_tag"] = self.base38_timestamp_tag
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> NoteAttachment:
+        raw_ts = data.get("exact_unix_timestamp", data.get("exactUnixTimestamp"))
+        raw_tag = data.get("base38_timestamp_tag", data.get("base38TimestampTag"))
         return cls(
             id=str(data["id"]),
             filename=str(data["filename"]),
@@ -132,6 +141,8 @@ class NoteAttachment:
             pixel_width=int(data.get("pixel_width", data.get("pixelWidth", 1))),
             pixel_height=int(data.get("pixel_height", data.get("pixelHeight", 1))),
             created_at=str(data.get("created_at", data.get("createdAt", ""))),
+            exact_unix_timestamp=int(raw_ts) if raw_ts is not None else None,
+            base38_timestamp_tag=str(raw_tag) if raw_tag is not None else None,
         )
 
 

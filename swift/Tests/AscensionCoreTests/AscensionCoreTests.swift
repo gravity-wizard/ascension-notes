@@ -220,4 +220,45 @@ final class AscensionCoreTests: XCTestCase {
         XCTAssertEqual(docWithImage.normalizedText, "Norma screenshot:\n▸[Image: NormA.png #a1b2]")
         XCTAssertEqual(docWithImage.axif.munscCount, 1)
     }
+
+    func testCleanExactClockExpressionAndPictureWordMath() throws {
+        let cleanTs = try Base38Clock.decodeJesusClock("2p15ek")
+        let cleanExpr = Base38Clock.cleanExactClockExpression(unixSeconds: cleanTs, contextWords: ["tree"])
+        XCTAssertEqual(cleanExpr.expression, "2p15ek")
+        XCTAssertFalse(cleanExpr.usedArithmeticWorkaround)
+        XCTAssertEqual(try Base38Clock.decodeClockExpression(cleanExpr.expression), cleanTs)
+
+        // Bad triple-6 timestamp ("2p7666") with picture context word ("gym") preserves MSD "2p7"
+        let gymTs = try Base38Clock.decodeJesusClock("2p7666")
+        let gymExpr = Base38Clock.cleanExactClockExpression(
+            unixSeconds: gymTs,
+            contextWords: ["gym", "Air Derby"],
+            maxLength: 17
+        )
+        XCTAssertTrue(gymExpr.usedArithmeticWorkaround)
+        XCTAssertEqual(gymExpr.contextWordUsed, "gym")
+        XCTAssertTrue(gymExpr.expression.hasPrefix("2p7"))
+        XCTAssertTrue(gymExpr.expression.hasSuffix("-gym") || gymExpr.expression.hasSuffix("+gym"))
+        XCTAssertLessThanOrEqual(gymExpr.expression.count, 17)
+        XCTAssertEqual(try Base38Clock.decodeClockExpression(gymExpr.expression), gymTs)
+
+        // Symbols (^ / |) or blocked substring ("2p7fuk") rewrite to pure lowercase [0-9a-z] math
+        for rawBad in ["2p7fuk", "2shit1", "2p7|^a"] {
+            let ts = try Base38Clock.decodeJesusClock(rawBad)
+            let res = Base38Clock.cleanExactClockExpression(
+                unixSeconds: ts,
+                contextWords: ["Weeping", "willow", "tree"],
+                maxLength: 17
+            )
+            XCTAssertTrue(res.usedArithmeticWorkaround)
+            XCTAssertLessThanOrEqual(res.expression.count, 17)
+            XCTAssertFalse(res.expression.contains("^"))
+            XCTAssertFalse(res.expression.contains("|"))
+            XCTAssertEqual(try Base38Clock.decodeClockExpression(res.expression), ts)
+        }
+
+        // Exact evaluation of "2p5000-334"
+        let expected = try Base38Clock.decodeJesusClock("2p5000") - Base38Clock.decode("334")
+        XCTAssertEqual(try Base38Clock.decodeClockExpression("2p5000-334"), expected)
+    }
 }
