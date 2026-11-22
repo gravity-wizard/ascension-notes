@@ -239,6 +239,8 @@ _FALLBACK_EXACT_WORDS: tuple[str, ...] = (
     "arc", "way", "key", "orb", "day", "era", "leaf", "peak", "pine", "wave",
     "moon", "glow", "hope", "love", "wind", "rain", "song", "book", "seed", "star",
     "calm", "home", "tree", "bird", "gold", "pure", "true", "wise", "good", "life",
+    "angel", "bloom", "cloud", "dream", "earth", "faith", "grace", "heart", "light", "peace",
+    "beacon", "nature", "wonder",
 )
 
 
@@ -292,7 +294,7 @@ def clean_exact_clock_expression(
     other_ctx: list[str] = []
     seen: set[str] = set()
     for raw_word in context_words:
-        for part in re.findall(r"[a-z]{2,5}", raw_word.lower()):
+        for part in re.findall(r"[a-z]{2,6}", raw_word.lower()):
             if part in seen or not is_clean_lower_alnum_clock(part, blocked_substrings=blocked_substrings):
                 continue
             seen.add(part)

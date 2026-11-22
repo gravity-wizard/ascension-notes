@@ -534,6 +534,15 @@ class SkipVowelsAndAttachmentTests(unittest.TestCase):
         self.assertIn("-", cap_res.expression)
         self.assertEqual(decode_clock_expression(cap_res.expression), cap_ts)
 
+        # Multi-digit |/^ windows (e.g. 2027's 2^0000 and 2110-2115's |00000..^|||||) still resolve cleanly
+        for wide_bad in ("2||000", "2^0000", "z^0000", "|00000", "^|||||"):
+            ts = decode_jesus_clock(wide_bad)
+            res = clean_exact_clock_expression(ts, max_length=17)
+            self.assertNotIn("|", res.expression)
+            self.assertNotIn("^", res.expression)
+            self.assertLessEqual(len(res.expression), 17)
+            self.assertEqual(decode_clock_expression(res.expression), ts)
+
         # Explicit round-anchor check for "2p5000-334"
         expected_2p5000_minus_334 = decode_jesus_clock("2p5000") - decode_base38("334")
         self.assertEqual(decode_clock_expression("2p5000-334"), expected_2p5000_minus_334)

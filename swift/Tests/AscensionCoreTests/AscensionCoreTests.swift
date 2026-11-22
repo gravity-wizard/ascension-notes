@@ -270,6 +270,16 @@ final class AscensionCoreTests: XCTestCase {
         XCTAssertTrue(capRes.expression.hasPrefix("2p4"))
         XCTAssertEqual(try Base38Clock.decodeClockExpression(capRes.expression), capTs)
 
+        // Multi-digit |/^ windows (e.g. 2027's 2^0000 and 2110-2115's |00000..^|||||) still resolve cleanly
+        for wideBad in ["2||000", "2^0000", "z^0000", "|00000", "^|||||"] {
+            let ts = try Base38Clock.decodeJesusClock(wideBad)
+            let res = Base38Clock.cleanExactClockExpression(unixSeconds: ts, maxLength: 17)
+            XCTAssertFalse(res.expression.contains("|"))
+            XCTAssertFalse(res.expression.contains("^"))
+            XCTAssertLessThanOrEqual(res.expression.count, 17)
+            XCTAssertEqual(try Base38Clock.decodeClockExpression(res.expression), ts)
+        }
+
         // Exact evaluation of "2p5000-334"
         let expected = try Base38Clock.decodeJesusClock("2p5000") - Base38Clock.decode("334")
         XCTAssertEqual(try Base38Clock.decodeClockExpression("2p5000-334"), expected)

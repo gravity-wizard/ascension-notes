@@ -242,7 +242,9 @@ public enum Base38Clock: Sendable {
         "sun", "sky", "joy", "art", "oak", "dew", "zen", "ace", "ray", "gem",
         "arc", "way", "key", "orb", "day", "era", "leaf", "peak", "pine", "wave",
         "moon", "glow", "hope", "love", "wind", "rain", "song", "book", "seed", "star",
-        "calm", "home", "tree", "bird", "gold", "pure", "true", "wise", "good", "life"
+        "calm", "home", "tree", "bird", "gold", "pure", "true", "wise", "good", "life",
+        "angel", "bloom", "cloud", "dream", "earth", "faith", "grace", "heart", "light", "peace",
+        "beacon", "nature", "wonder"
     ]
 
     public static func isLowerAlnumBase38(_ value: String) -> Bool {
@@ -283,7 +285,7 @@ public enum Base38Clock: Sendable {
         }
 
         // Extract clean 3-char lowercase [a-z] picture words first (for 6-3 = 9 digits + '-'),
-        // then 2..5 char words as secondary fallback.
+        // then 2..6 char words as secondary fallback.
         var threeCharContext: [String] = []
         var otherContext: [String] = []
         var seenWords: Set<String> = []
@@ -292,7 +294,7 @@ public enum Base38Clock: Sendable {
                 .lowercased()
                 .split { !($0 >= "a" && $0 <= "z") }
                 .map(String.init)
-            for part in parts where part.count >= 2 && part.count <= 5 {
+            for part in parts where part.count >= 2 && part.count <= 6 {
                 guard !seenWords.contains(part),
                       isCleanLowerAlnumClock(part, blockedSubstrings: blockedSubstrings) else {
                     continue
