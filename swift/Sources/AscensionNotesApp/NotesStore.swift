@@ -485,7 +485,20 @@ final class NotesStore {
         URL.applicationSupportDirectory.appendingPathComponent("AscensionNotes", isDirectory: true)
     }
 
+    private static var sharedSyncFolderPointerURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ascension-notes-sync-folder")
+    }
+
+    private static func saveSharedSyncFolderPath(_ path: String) {
+        try? path.write(to: sharedSyncFolderPointerURL, atomically: true, encoding: .utf8)
+    }
+
+    private static func clearSharedSyncFolderPath() {
+        try? FileManager.default.removeItem(at: sharedSyncFolderPointerURL)
+    }
+
     static func resolveInitialSyncFolder() -> URL {
+        let fm = FileManager.default
         if let bookmarkData = UserDefaults.standard.data(forKey: syncFolderBookmarkKey) {
             var isStale = false
             #if os(macOS)
@@ -512,6 +525,21 @@ final class NotesStore {
         if let savedPath = UserDefaults.standard.string(forKey: syncFolderDefaultsKey),
            !savedPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return URL(fileURLWithPath: savedPath, isDirectory: true)
+        }
+
+        if let sharedPath = try? String(contentsOf: sharedSyncFolderPointerURL, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !sharedPath.isEmpty {
+            let sharedURL = URL(fileURLWithPath: sharedPath, isDirectory: true)
+            if fm.fileExists(atPath: sharedURL.path) {
+                return sharedURL
+            }
+        }
+
+        let defaultNotes = defaultStorageFolderURL.appendingPathComponent("notes.json").path
+        if !fm.fileExists(atPath: defaultNotes),
+           let existingCandidate = detectSyncFolderCandidates().first(where: { $0.existsAlready }) {
+            return existingCandidate.url
         }
 
         return defaultStorageFolderURL
@@ -627,6 +655,7 @@ final class NotesStore {
 
         activeSyncFolderURL = targetDir
         UserDefaults.standard.set(targetDir.path, forKey: Self.syncFolderDefaultsKey)
+        Self.saveSharedSyncFolderPath(targetDir.path)
         withFolderAccess(targetDir) {
             #if os(macOS)
             if let bookmark = try? targetDir.bookmarkData(
@@ -688,6 +717,7 @@ final class NotesStore {
     func resetToDefaultSyncFolder() {
         UserDefaults.standard.removeObject(forKey: Self.syncFolderDefaultsKey)
         UserDefaults.standard.removeObject(forKey: Self.syncFolderBookmarkKey)
+        Self.clearSharedSyncFolderPath()
         setSyncFolder(Self.defaultStorageFolderURL)
     }
 
@@ -1733,6 +1763,17 @@ final class NotesStore {
             selectedNoteID = filteredNotes.first?.id
             harvestAscenderRecentEmojis()
             return
+        }
+
+        withFolderAccess(activeSyncFolderURL) {
+            let fm = FileManager.default
+            if fm.fileExists(atPath: storageURL.path),
+               let existingData = try? Data(contentsOf: storageURL),
+               !existingData.isEmpty {
+                let ts = Int(Date().timeIntervalSince1970)
+                let recoveryURL = activeSyncFolderURL.appendingPathComponent("notes.recovery-\(ts).json")
+                try? existingData.write(to: recoveryURL, options: .atomic)
+            }
         }
 
         notes = Self.makeSeedNotes()
