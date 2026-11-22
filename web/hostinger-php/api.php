@@ -87,36 +87,45 @@ function sanitize_slug(string $raw): string {
     $s = strtolower(trim($raw));
     $s = str_replace(["'", "’"], '', $s);
     $s = preg_replace('/[^a-z0-9]+/', '-', $s) ?? '';
-    return substr(trim($s, '-'), 0, 48);
+    return substr(trim($s, '-'), 0, 40);
 }
 
-function random_short_code(int $len = 4): string {
-    $alpha = '0123456789abcdefghijklmnopqrstuvwxyz';
+function encode_compact_time(int $n): string {
+    $alpha = '0123456789abcdefghijklmnopqrstuvwxyz|^';
+    if ($n <= 0) return '0';
     $out = '';
-    $bytes = random_bytes($len);
-    for ($i = 0; $i < $len; $i++) {
-        $out .= $alpha[ord($bytes[$i]) % 36];
+    while ($n > 0) {
+        $out = $alpha[$n % 38] . $out;
+        $n = intdiv($n, 38);
     }
     return $out;
 }
 
+function is_clean_alnum_tag(string $s): bool {
+    if ($s === '' || preg_match('/^[0-9a-z]+$/', $s) !== 1) return false;
+    $leet = strtr($s, ['0' => 'o', '1' => 'i', '3' => 'e', '4' => 'a', '5' => 's', '7' => 't', '8' => 'b']);
+    $blocked = ['666', 'anal', 'anus', 'arse', 'bitch', 'btch', 'cock', 'c0ck', 'cunt', 'damn', 'dick', 'd1ck', 'dyke', 'fag', 'fck', 'fuk', 'fuck', 'hell', 'jizz', 'kike', 'klan', 'nazi', 'nig', 'n1g', 'porn', 'p0rn', 'puss', 'rape', 'shit', 'sh1t', 'slut', 'spic', 'twat', 'wank', 'whor', 'xxx'];
+    foreach ($blocked as $b) {
+        if (str_contains($s, $b) || str_contains($leet, $b)) return false;
+    }
+    return true;
+}
+
 function pick_unique_slug(string $customName, array $existing): string {
-    $req = sanitize_slug($customName);
-    if ($req !== '') {
-        if (!isset($existing[$req])) return $req;
-        for ($i = 2; $i <= 99; $i++) {
-            $cand = "{$req}-{$i}";
-            if (!isset($existing[$cand])) return $cand;
-        }
-        return $req . '-' . random_short_code(3);
+    $prefix = sanitize_slug($customName);
+    $epoch = 1584540571;
+    $agyOffset = 10 * 38 * 38 + 16 * 38 + 34; // decode("agy")
+    $baseSec = max($epoch, time());
+    for ($bump = 0; $bump < 90; $bump++) {
+        $elapsed = ($baseSec + $bump) - $epoch;
+        $anchor = encode_compact_time($elapsed + $agyOffset);
+        if (!is_clean_alnum_tag($anchor)) continue;
+        $tag = "{$anchor}-agy";
+        $cand = $prefix !== '' ? "{$prefix}-{$tag}" : $tag;
+        if (!isset($existing[$cand])) return $cand;
     }
-    for ($len = 4; $len <= 6; $len++) {
-        for ($a = 0; $a < 24; $a++) {
-            $cand = random_short_code($len);
-            if (!isset($existing[$cand])) return $cand;
-        }
-    }
-    return random_short_code(7);
+    $fb = preg_replace('/[^0-9a-z]/', 'x', encode_compact_time($baseSec - $epoch + $agyOffset)) . '-agy';
+    return $prefix !== '' ? "{$prefix}-{$fb}" : $fb;
 }
 
 function build_snippets(string $root, array $rec): array {

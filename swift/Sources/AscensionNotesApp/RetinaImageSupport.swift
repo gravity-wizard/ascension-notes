@@ -495,7 +495,7 @@ struct RenameAttachmentPopover: View {
     @State private var subjectDraft: String
     @State private var favoriteOffsetDraft: String
 
-    private let quickOffsetPresets = ["sun", "joy", "zen", "gem", "oak"]
+    private let quickOffsetPresets = ["agy", "sun", "joy", "zen", "gem", "oak"]
 
     init(store: NotesStore, noteID: UUID, attachment: NoteAttachment, isPresented: Binding<Bool>) {
         self.store = store

@@ -20,14 +20,35 @@ function formatKb(bytes) {
   return `${(bytes / 1024).toFixed(1)} KB`;
 }
 
+function buildAgyTimeTag() {
+  const alpha = "0123456789abcdefghijklmnopqrstuvwxyz|^";
+  const epoch = 1584540571;
+  const agyOffset = 15082;
+  const baseSec = Math.max(epoch, Math.floor(Date.now() / 1000));
+  for (let bump = 0; bump < 60; bump++) {
+    let n = (baseSec + bump) - epoch + agyOffset;
+    let out = "";
+    while (n > 0) {
+      out = alpha[n % 38] + out;
+      n = Math.floor(n / 38);
+    }
+    if (/^[0-9a-z]+$/.test(out) && !out.includes("666")) {
+      return `${out}-agy`;
+    }
+  }
+  return "now-agy";
+}
+
 function sanitizeLocalFilename(raw, ext) {
   const clean = String(raw || "")
     .trim()
     .toLowerCase()
     .replace(/['’]/g, "")
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return `${clean || "image"}.${ext}`;
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+  const tag = buildAgyTimeTag();
+  return `${clean ? `${clean}-` : ""}${tag}.${ext}`;
 }
 
 async function fetchConfig() {

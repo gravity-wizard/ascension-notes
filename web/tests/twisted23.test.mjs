@@ -3,20 +3,27 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { pickUniqueSlug, sanitizeSlug } from "../lib/images.mjs";
+import { mintAgyTimeTag, pickUniqueSlug, sanitizeSlug } from "../lib/images.mjs";
 import { createStore } from "../lib/store.mjs";
 import { createAppServer } from "../server.mjs";
 
-test("Slug sanitizer creates Uncle Norman slugs or ultra-short 4-char IDs", () => {
+test("Slug sanitizer appends exact time ending in -agy for custom and blank names", () => {
   assert.equal(sanitizeSlug("Uncle Norman"), "uncle-norman");
-  assert.equal(sanitizeSlug("  Hello World!! "), "hello-world");
 
-  const existing = { "uncle-norman": {} };
-  assert.equal(pickUniqueSlug("Uncle Norman", existing), "uncle-norman-2");
+  const fixedUnix = 1795385000;
+  const first = pickUniqueSlug("Uncle Norman", {}, fixedUnix);
+  assert.match(first, /^uncle-norman-[0-9a-z]{6}-agy$/);
 
-  const short = pickUniqueSlug("", {});
-  assert.equal(short.length, 4);
-  assert.match(short, /^[a-z0-9]{4}$/);
+  const second = pickUniqueSlug("Uncle Norman", { [first]: {} }, fixedUnix);
+  assert.notEqual(second, first);
+  assert.match(second, /^uncle-norman-[0-9a-z]{6}-agy$/);
+
+  const blank = pickUniqueSlug("", {}, fixedUnix);
+  assert.match(blank, /^[0-9a-z]{6}-agy$/);
+  assert.equal(blank.length, 10);
+
+  const tag = mintAgyTimeTag(fixedUnix);
+  assert.ok(tag.tag.endsWith("-agy"));
 });
 
 test("Public UI contains zero references to NDA, Levels, or Base38", async () => {
@@ -29,8 +36,8 @@ test("Public UI contains zero references to NDA, Levels, or Base38", async () =>
   }
 });
 
-test("Minimal ImgBB flow: custom/short upload, 575KB limit, caching headers, and IP quota", async () => {
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "twisted23-simple-"));
+test("Minimal ImgBB flow: custom/short -agy filenames, 575KB limit, cache headers, and IP quota", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "twisted23-agy-"));
   const dbPath = path.join(tmpDir, "store.json");
   process.env.TWISTED23_IP_DAILY_QUOTA = "3";
 
@@ -46,13 +53,12 @@ test("Minimal ImgBB flow: custom/short upload, 575KB limit, caching headers, and
   ]);
 
   try {
-    // 1. Health endpoint reflects 575 KB limit
     let res = await fetch(`${baseUrl}/api/health`);
     let body = await res.json();
     assert.equal(res.status, 200);
     assert.equal(body.maxImageBytes, 575 * 1024);
 
-    // 2. Reject non-image bytes (400) and > 575 KB payload (413)
+    // Reject non-image bytes (400) and > 575 KB payload (413)
     res = await fetch(`${baseUrl}/api/images/upload`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -69,7 +75,7 @@ test("Minimal ImgBB flow: custom/short upload, 575KB limit, caching headers, and
     });
     assert.equal(res.status, 413);
 
-    // 3. Upload with custom name "Uncle Norman"
+    // Upload with custom name "Uncle Norman" -> uncle-norman-<6chars>-agy.png
     const tinyPng = Buffer.concat([validPngHead, Buffer.from("SamplePixels1")]);
     res = await fetch(`${baseUrl}/api/images/upload`, {
       method: "POST",
@@ -81,26 +87,26 @@ test("Minimal ImgBB flow: custom/short upload, 575KB limit, caching headers, and
     });
     assert.equal(res.status, 200);
     body = await res.json();
-    assert.equal(body.image.slug, "uncle-norman");
-    assert.equal(body.image.storedFilename, "uncle-norman.png");
-    assert.ok(body.image.snippets.directUrl.endsWith("/i/uncle-norman.png"));
-    assert.ok(body.image.snippets.viewerUrl.endsWith("/?img=uncle-norman"));
+    assert.match(body.image.slug, /^uncle-norman-[0-9a-z]{6}-agy$/);
+    assert.match(body.image.storedFilename, /^uncle-norman-[0-9a-z]{6}-agy\.png$/);
+    assert.ok(body.image.snippets.directUrl.includes(`/i/${body.image.storedFilename}`));
     assert.ok(body.image.snippets.html.includes("<img src="));
     assert.ok(body.image.snippets.bbcodeLinked.includes("[url="));
     assert.ok(body.image.snippets.markdown.startsWith("!["));
 
-    // 4. Serve /i/uncle-norman.png with immutable cache + 304 ETag
-    const imgRes = await fetch(`${baseUrl}/i/uncle-norman.png`);
+    // Serve hosted file with immutable cache + 304 ETag
+    const imgPath = new URL(body.image.snippets.directUrl).pathname;
+    const imgRes = await fetch(`${baseUrl}${imgPath}`);
     assert.equal(imgRes.status, 200);
     assert.equal(imgRes.headers.get("cloudflare-cdn-cache-control"), "public, max-age=31536000, immutable");
     const etag = imgRes.headers.get("etag");
     assert.ok(etag);
-    const notMod = await fetch(`${baseUrl}/i/uncle-norman.png`, {
+    const notMod = await fetch(`${baseUrl}${imgPath}`, {
       headers: { "If-None-Match": etag },
     });
     assert.equal(notMod.status, 304);
 
-    // 5. Blank customName generates ultra-short 4-char URL
+    // Blank customName -> <6chars>-agy.png
     res = await fetch(`${baseUrl}/api/images/upload`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -108,9 +114,9 @@ test("Minimal ImgBB flow: custom/short upload, 575KB limit, caching headers, and
     });
     assert.equal(res.status, 200);
     body = await res.json();
-    assert.equal(body.image.slug.length, 4);
+    assert.match(body.image.slug, /^[0-9a-z]{6}-agy$/);
 
-    // 6. 3rd upload succeeds, 4th hits IP daily quota (429)
+    // 3rd upload succeeds, 4th hits IP quota (429)
     res = await fetch(`${baseUrl}/api/images/upload`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
