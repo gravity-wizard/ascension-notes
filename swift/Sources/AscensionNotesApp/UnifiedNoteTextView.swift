@@ -19,6 +19,9 @@ struct UnifiedNoteTextView: NSViewRepresentable {
     let autoCapitalizeNewLines: Bool
     let foldedBlocks: [String: String]
     let fontSpans: [FontSizeSpan]
+    let searchSignature: String
+    let searchHighlightRanges: [NSRange]
+    let activeSearchIndex: Int
 
     func makeCoordinator() -> Coordinator {
         Coordinator(store: store)
@@ -72,13 +75,30 @@ struct UnifiedNoteTextView: NSViewRepresentable {
 
         textView.string = text
         applyAllTypography(to: textView, defaultSize: defaultFontSize, spans: fontSpans)
+        context.coordinator.applySearchHighlights(
+            to: textView,
+            ranges: searchHighlightRanges,
+            activeIndex: activeSearchIndex
+        )
 
         scrollView.documentView = textView
         context.coordinator.textView = textView
         context.coordinator.lastNoteID = noteID
         context.coordinator.lastSyncedText = text
         context.coordinator.lastAutoCap = autoCapitalizeNewLines
+        context.coordinator.lastSearchSignature = searchSignature
+        context.coordinator.lastActiveSearchIndex = activeSearchIndex
         context.coordinator.installTextViewActionHandler()
+
+        if let firstTarget = context.coordinator.targetRange(from: searchHighlightRanges, activeIndex: activeSearchIndex) {
+            Task { @MainActor [weak textView] in
+                await Task.yield()
+                guard let textView else { return }
+                textView.ensureFullLayoutAndFrame()
+                textView.scrollRangeToVisible(firstTarget)
+                textView.showFindIndicator(for: firstTarget)
+            }
+        }
         return scrollView
     }
 
@@ -120,6 +140,8 @@ struct UnifiedNoteTextView: NSViewRepresentable {
 
         let switchedNote = context.coordinator.lastNoteID != noteID
         let externalTextChanged = text != context.coordinator.lastSyncedText && text != textView.string
+        let searchChanged = context.coordinator.lastSearchSignature != searchSignature
+        let activeIndexChanged = context.coordinator.lastActiveSearchIndex != activeSearchIndex
 
         if (switchedNote || externalTextChanged) && !textView.hasMarkedText() {
             let previousSelection = textView.selectedRange()
@@ -133,6 +155,28 @@ struct UnifiedNoteTextView: NSViewRepresentable {
             } else {
                 let clampedLoc = min(previousSelection.location, (text as NSString).length)
                 textView.setSelectedRange(NSRange(location: clampedLoc, length: 0))
+            }
+        }
+
+        context.coordinator.lastSearchSignature = searchSignature
+        context.coordinator.lastActiveSearchIndex = activeSearchIndex
+        context.coordinator.applySearchHighlights(
+            to: textView,
+            ranges: searchHighlightRanges,
+            activeIndex: activeSearchIndex
+        )
+
+        if (switchedNote || searchChanged || activeIndexChanged),
+           let target = context.coordinator.targetRange(from: searchHighlightRanges, activeIndex: activeSearchIndex) {
+            let pulse = switchedNote || activeIndexChanged
+            Task { @MainActor [weak textView] in
+                await Task.yield()
+                guard let textView else { return }
+                textView.ensureFullLayoutAndFrame()
+                textView.scrollRangeToVisible(target)
+                if pulse {
+                    textView.showFindIndicator(for: target)
+                }
             }
         }
     }
@@ -243,10 +287,60 @@ struct UnifiedNoteTextView: NSViewRepresentable {
         var lastNoteID: UUID?
         var lastSyncedText: String = ""
         var lastAutoCap: Bool = false
+        var lastSearchSignature: String = ""
+        var lastActiveSearchIndex: Int = -1
+        var hasActiveSearchHighlights: Bool = false
         var lastPublishedSpellTarget: CursorSpellTarget? = nil
 
         init(store: NotesStore) {
             self.store = store
+        }
+
+        func targetRange(from ranges: [NSRange], activeIndex: Int) -> NSRange? {
+            guard !ranges.isEmpty else { return nil }
+            let idx = ((activeIndex % ranges.count) + ranges.count) % ranges.count
+            return ranges[idx]
+        }
+
+        func applySearchHighlights(
+            to tv: AscensionNSTextView,
+            ranges: [NSRange],
+            activeIndex: Int
+        ) {
+            guard let layoutManager = tv.layoutManager else { return }
+            let totalLen = (tv.string as NSString).length
+            guard totalLen > 0 else {
+                hasActiveSearchHighlights = false
+                return
+            }
+
+            if hasActiveSearchHighlights || !ranges.isEmpty {
+                layoutManager.removeTemporaryAttribute(
+                    .backgroundColor,
+                    forCharacterRange: NSRange(location: 0, length: totalLen)
+                )
+            }
+
+            guard !ranges.isEmpty else {
+                hasActiveSearchHighlights = false
+                return
+            }
+
+            let clampedActive = ((activeIndex % ranges.count) + ranges.count) % ranges.count
+            let baseColor = NSColor(calibratedRed: 0.94, green: 0.78, blue: 0.22, alpha: 0.36)
+            let activeColor = NSColor(calibratedRed: 0.96, green: 0.60, blue: 0.10, alpha: 0.56)
+
+            for (idx, range) in ranges.enumerated() {
+                let loc = max(0, min(range.location, totalLen))
+                let len = max(0, min(range.length, totalLen - loc))
+                guard len > 0 else { continue }
+                layoutManager.addTemporaryAttribute(
+                    .backgroundColor,
+                    value: idx == clampedActive ? activeColor : baseColor,
+                    forCharacterRange: NSRange(location: loc, length: len)
+                )
+            }
+            hasActiveSearchHighlights = true
         }
 
         func installTextViewActionHandler() {
@@ -304,6 +398,27 @@ struct UnifiedNoteTextView: NSViewRepresentable {
                     let newPos = safeLoc + (actualSnippet as NSString).length
                     tv.setSelectedRange(NSRange(location: newPos, length: 0))
                     tv.window?.makeFirstResponder(tv)
+                    return true
+
+                case .revealRange(let range):
+                    let totalLen = (tv.string as NSString).length
+                    guard totalLen > 0 else { return false }
+                    let loc = max(0, min(range.location, totalLen))
+                    let len = max(0, min(range.length, totalLen - loc))
+                    let safeRange = NSRange(location: loc, length: len)
+                    if let note = self.store.selectedNote {
+                        let ranges = self.store.searchHighlightNSRanges(for: note)
+                        self.applySearchHighlights(
+                            to: tv,
+                            ranges: ranges,
+                            activeIndex: self.store.activeSearchMatchIndex
+                        )
+                    }
+                    tv.ensureFullLayoutAndFrame()
+                    tv.scrollRangeToVisible(safeRange)
+                    if safeRange.length > 0 {
+                        tv.showFindIndicator(for: safeRange)
+                    }
                     return true
                 }
             }
@@ -466,6 +581,14 @@ struct UnifiedNoteTextView: NSViewRepresentable {
             DispatchQueue.main.async { [weak self, weak tv] in
                 guard let self, let tv, !tv.hasMarkedText() else { return }
                 self.reapplyVisualLine1AndFoldsPreservingSpans(on: tv)
+                if let note = self.store.selectedNote {
+                    let ranges = self.store.searchHighlightNSRanges(for: note)
+                    self.applySearchHighlights(
+                        to: tv,
+                        ranges: ranges,
+                        activeIndex: self.store.activeSearchMatchIndex
+                    )
+                }
                 self.refreshCursorSpellTarget(on: tv)
             }
         }

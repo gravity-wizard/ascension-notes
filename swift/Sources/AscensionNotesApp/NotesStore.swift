@@ -272,6 +272,7 @@ public enum TextViewQuickAction: Sendable {
     case replaceRange(location: Int, length: Int, with: String, learnWord: String?)
     case learnOnly(String)
     case insertText(String)
+    case revealRange(NSRange)
 }
 
 @MainActor
@@ -317,6 +318,7 @@ final class NotesStore {
 
     var viewMode: ViewLayerMode = .edit
     var showFindBar: Bool = false
+    var activeSearchMatchIndex: Int = 0
     var showInspector: Bool = false
     var showHelp: Bool = false
     var showA3odex: Bool = false
@@ -806,6 +808,148 @@ final class NotesStore {
         } catch {
             return error.localizedDescription
         }
+    }
+
+    func searchHighlightNSRanges(for note: StoredNote) -> [NSRange] {
+        let matches = searchMatches(for: note)
+        guard !matches.isEmpty else { return [] }
+
+        let raw = note.rawText
+        guard !raw.isEmpty else { return [] }
+
+        if note.foldedBlocks.isEmpty {
+            let charCount = raw.count
+            var result: [NSRange] = []
+            result.reserveCapacity(matches.count)
+            for hit in matches {
+                let sOff = max(0, min(hit.rawOffset, charCount))
+                let eOff = max(sOff, min(hit.rawEnd, charCount))
+                guard sOff < eOff else { continue }
+                let sIdx = raw.index(raw.startIndex, offsetBy: sOff)
+                let eIdx = raw.index(raw.startIndex, offsetBy: eOff)
+                let nsRange = NSRange(sIdx..<eIdx, in: raw)
+                if nsRange.length > 0 {
+                    result.append(nsRange)
+                }
+            }
+            return result
+        }
+
+        // Map expandedRawText character offsets back onto note.rawText NSRanges when fold markers are present.
+        struct SegmentMap {
+            let rawRange: Range<String.Index>
+            let expStart: Int
+            let expEnd: Int
+            let isFolded: Bool
+        }
+
+        var segments: [SegmentMap] = []
+        var rawCursor = raw.startIndex
+        var expCursor = 0
+        let markers = Array(note.foldedBlocks.keys)
+
+        while rawCursor < raw.endIndex {
+            var earliestRange: Range<String.Index>? = nil
+            var earliestMarker: String? = nil
+            for marker in markers {
+                if let found = raw.range(of: marker, range: rawCursor..<raw.endIndex) {
+                    if earliestRange == nil || found.lowerBound < earliestRange!.lowerBound {
+                        earliestRange = found
+                        earliestMarker = marker
+                    }
+                }
+            }
+
+            guard let foundRange = earliestRange, let marker = earliestMarker else {
+                let tailLen = raw.distance(from: rawCursor, to: raw.endIndex)
+                segments.append(
+                    SegmentMap(
+                        rawRange: rawCursor..<raw.endIndex,
+                        expStart: expCursor,
+                        expEnd: expCursor + tailLen,
+                        isFolded: false
+                    )
+                )
+                break
+            }
+
+            if rawCursor < foundRange.lowerBound {
+                let plainLen = raw.distance(from: rawCursor, to: foundRange.lowerBound)
+                segments.append(
+                    SegmentMap(
+                        rawRange: rawCursor..<foundRange.lowerBound,
+                        expStart: expCursor,
+                        expEnd: expCursor + plainLen,
+                        isFolded: false
+                    )
+                )
+                expCursor += plainLen
+            }
+
+            let expandedLen = (note.foldedBlocks[marker] ?? marker).count
+            segments.append(
+                SegmentMap(
+                    rawRange: foundRange,
+                    expStart: expCursor,
+                    expEnd: expCursor + expandedLen,
+                    isFolded: true
+                )
+            )
+            expCursor += expandedLen
+            rawCursor = foundRange.upperBound
+        }
+
+        var result: [NSRange] = []
+        result.reserveCapacity(matches.count)
+        for hit in matches {
+            let hS = max(0, min(hit.rawOffset, expCursor))
+            let hE = max(hS, min(hit.rawEnd, expCursor))
+            guard hS < hE else { continue }
+            for seg in segments {
+                let ovS = max(hS, seg.expStart)
+                let ovE = min(hE, seg.expEnd)
+                guard ovS < ovE else { continue }
+                if seg.isFolded {
+                    let nsRange = NSRange(seg.rawRange, in: raw)
+                    if nsRange.length > 0 {
+                        result.append(nsRange)
+                    }
+                } else {
+                    let relS = ovS - seg.expStart
+                    let relE = ovE - seg.expStart
+                    let sIdx = raw.index(seg.rawRange.lowerBound, offsetBy: relS)
+                    let eIdx = raw.index(seg.rawRange.lowerBound, offsetBy: relE)
+                    let nsRange = NSRange(sIdx..<eIdx, in: raw)
+                    if nsRange.length > 0 {
+                        result.append(nsRange)
+                    }
+                }
+            }
+        }
+        return result
+    }
+
+    func jumpToSearchMatch(at index: Int) {
+        guard let note = selectedNote else { return }
+        let ranges = searchHighlightNSRanges(for: note)
+        guard !ranges.isEmpty else {
+            activeSearchMatchIndex = 0
+            return
+        }
+        let clamped = ((index % ranges.count) + ranges.count) % ranges.count
+        activeSearchMatchIndex = clamped
+        _ = activeTextViewActionHandler?(.revealRange(ranges[clamped]))
+    }
+
+    func stepSearchMatch(delta: Int) {
+        guard let note = selectedNote else { return }
+        let ranges = searchHighlightNSRanges(for: note)
+        guard !ranges.isEmpty else {
+            activeSearchMatchIndex = 0
+            return
+        }
+        let next = ((activeSearchMatchIndex + delta) % ranges.count + ranges.count) % ranges.count
+        jumpToSearchMatch(at: next)
     }
 
     // MARK: - Custom MUNSC Rules

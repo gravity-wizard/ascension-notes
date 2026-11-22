@@ -356,6 +356,22 @@ struct AscensionNotesRootView: View {
         .onChange(of: store.selectedNoteID) { _, _ in
             copiedFeedbackLabel = nil
             store.cursorSpellTarget = nil
+            store.activeSearchMatchIndex = 0
+        }
+        .onChange(of: store.query) { _, _ in
+            store.activeSearchMatchIndex = 0
+        }
+        .onChange(of: store.caseSensitive) { _, _ in
+            store.activeSearchMatchIndex = 0
+        }
+        .onChange(of: store.wholeWord) { _, _ in
+            store.activeSearchMatchIndex = 0
+        }
+        .onChange(of: store.useRegex) { _, _ in
+            store.activeSearchMatchIndex = 0
+        }
+        .onChange(of: store.searchLayer) { _, _ in
+            store.activeSearchMatchIndex = 0
         }
         .onChange(of: store.viewMode) { _, _ in
             store.cursorSpellTarget = nil
@@ -566,6 +582,34 @@ struct AscensionNotesRootView: View {
 
                 Spacer()
 
+                if !store.query.isEmpty, let note = store.selectedNote {
+                    let hitRanges = store.searchHighlightNSRanges(for: note)
+                    if !hitRanges.isEmpty {
+                        let current = ((store.activeSearchMatchIndex % hitRanges.count) + hitRanges.count) % hitRanges.count
+                        HStack(spacing: 3) {
+                            Text("\(current + 1)/\(hitRanges.count)")
+                                .font(.caption2.monospacedDigit().bold())
+                                .foregroundStyle(notesGold)
+                            Button {
+                                store.stepSearchMatch(delta: -1)
+                            } label: {
+                                Image(systemName: "chevron.up")
+                                    .font(.caption2.weight(.semibold))
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Previous Match in Note")
+                            Button {
+                                store.stepSearchMatch(delta: 1)
+                            } label: {
+                                Image(systemName: "chevron.down")
+                                    .font(.caption2.weight(.semibold))
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Next Match in Note")
+                        }
+                    }
+                }
+
                 Picker("Scope", selection: $store.searchLayer) {
                     Text("Dual AXIF").tag(SearchLayer.dual)
                     Text("Clean").tag(SearchLayer.normalized)
@@ -691,6 +735,8 @@ struct AscensionNotesRootView: View {
 
                 if store.viewMode == .edit {
                     #if os(macOS)
+                    let searchSig = "\(store.query)|\(store.caseSensitive)|\(store.wholeWord)|\(store.useRegex)|\(store.searchLayer.rawValue)"
+                    let highlightRanges = store.searchHighlightNSRanges(for: note)
                     UnifiedNoteTextView(
                         store: store,
                         noteID: note.id,
@@ -698,7 +744,10 @@ struct AscensionNotesRootView: View {
                         defaultFontSize: store.editorFontSize,
                         autoCapitalizeNewLines: store.autoCapitalizeNewLines,
                         foldedBlocks: note.foldedBlocks,
-                        fontSpans: note.fontSpans
+                        fontSpans: note.fontSpans,
+                        searchSignature: searchSig,
+                        searchHighlightRanges: highlightRanges,
+                        activeSearchIndex: store.activeSearchMatchIndex
                     )
                     #else
                     let titleBinding = Binding(
@@ -740,17 +789,30 @@ struct AscensionNotesRootView: View {
                             .padding(.bottom, 12)
                     }
                 } else {
-                    let titleBinding = Binding(
-                        get: { store.selectedNote?.derivedTitle ?? "" },
-                        set: { store.updateSelectedTitle($0) }
-                    )
-                    TextField("Title", text: titleBinding)
-                        .font(.system(size: store.editorFontSize + 7, weight: .bold))
-                        .textFieldStyle(.plain)
-                        .focused($isTitleFocused)
-                        .padding(.horizontal, 24)
-                        .padding(.top, 4)
-                        .padding(.bottom, 6)
+                    if store.query.isEmpty {
+                        let titleBinding = Binding(
+                            get: { store.selectedNote?.derivedTitle ?? "" },
+                            set: { store.updateSelectedTitle($0) }
+                        )
+                        TextField("Title", text: titleBinding)
+                            .font(.system(size: store.editorFontSize + 7, weight: .bold))
+                            .textFieldStyle(.plain)
+                            .focused($isTitleFocused)
+                            .padding(.horizontal, 24)
+                            .padding(.top, 4)
+                            .padding(.bottom, 6)
+                    } else {
+                        Text(highlightedCleanTitleText(for: note))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                            .padding(.horizontal, 24)
+                            .padding(.top, 4)
+                            .padding(.bottom, 6)
+                            .onTapGesture {
+                                store.viewMode = .edit
+                                isTitleFocused = true
+                            }
+                    }
 
                     ScrollView {
                         VStack(alignment: .leading, spacing: 14) {
@@ -1096,9 +1158,33 @@ struct AscensionNotesRootView: View {
             searchOptionPill(title: "W", help: "Whole Word", isOn: $store.wholeWord)
             searchOptionPill(title: ".*", help: "Regex", isOn: $store.useRegex)
 
-            Text("\(store.selectedSearchMatches.count) hit(s)")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
+            let matchesCount = store.selectedSearchMatches.count
+            if matchesCount > 0 {
+                let current = ((store.activeSearchMatchIndex % matchesCount) + matchesCount) % matchesCount
+                Text("\(current + 1)/\(matchesCount) hit(s)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(notesGold)
+                Button {
+                    store.stepSearchMatch(delta: -1)
+                } label: {
+                    Image(systemName: "chevron.up")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Previous Match")
+                Button {
+                    store.stepSearchMatch(delta: 1)
+                } label: {
+                    Image(systemName: "chevron.down")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Next Match")
+            } else {
+                Text("0 hit(s)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
 
             Button {
                 withAnimation {
@@ -1115,30 +1201,38 @@ struct AscensionNotesRootView: View {
     }
 
     private var searchMatchesFooter: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let matches = store.selectedSearchMatches
+        let activeIdx = matches.isEmpty ? 0 : ((store.activeSearchMatchIndex % matches.count) + matches.count) % matches.count
+        return VStack(alignment: .leading, spacing: 6) {
             Divider()
-            Text("AXIF Search Matches (\(store.selectedSearchMatches.count))")
+            Text("AXIF Search Matches (\(matches.count))")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            ForEach(store.selectedSearchMatches) { hit in
-                HStack(spacing: 8) {
-                    Text("L\(hit.lineNumber):C\(hit.column)")
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                    Text(hit.matchedText)
-                        .font(.caption.monospaced().bold())
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(notesGold.opacity(0.22))
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                    if let entry = hit.axifEntry {
-                        Text("→ \(entry.normalizedForm) (\(entry.munscRule))")
-                            .font(.caption)
+            ForEach(Array(matches.enumerated()), id: \.element.id) { idx, hit in
+                Button {
+                    store.jumpToSearchMatch(at: idx)
+                } label: {
+                    HStack(spacing: 8) {
+                        Text("L\(hit.lineNumber):C\(hit.column)")
+                            .font(.caption2.monospaced())
                             .foregroundStyle(.secondary)
+                        Text(hit.matchedText)
+                            .font(.caption.monospaced().bold())
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(idx == activeIdx ? notesGold.opacity(0.45) : notesGold.opacity(0.22))
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                        if let entry = hit.axifEntry {
+                            Text("→ \(entry.normalizedForm) (\(entry.munscRule))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
                     }
-                    Spacer()
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
             }
         }
         .padding(.top, 8)
@@ -1430,6 +1524,36 @@ struct AscensionNotesRootView: View {
             }
         }
         .padding(.top, 6)
+    }
+
+    private func highlightedCleanTitleText(for note: StoredNote) -> AttributedString {
+        let fullClean = note.compiledDocument(urlSafeDash: store.urlSafeDash, rules: store.customRules)?
+            .render(normalized: true) ?? note.derivedTitle
+        let titleClean: String
+        if let firstNewline = fullClean.firstIndex(of: "\n") {
+            titleClean = String(fullClean[..<firstNewline])
+        } else {
+            titleClean = fullClean
+        }
+
+        let display = titleClean.isEmpty ? note.displayTitle : titleClean
+        var attributed = AttributedString(display)
+        attributed.font = .system(size: store.editorFontSize + 7, weight: .bold)
+
+        let titleLen = titleClean.count
+        guard titleLen > 0 else { return attributed }
+
+        for hit in store.searchMatches(for: note) {
+            let ovStart = max(0, hit.normalizedOffset)
+            let ovEnd = min(titleLen, hit.normalizedEnd)
+            guard ovStart < ovEnd else { continue }
+            let startIdx = titleClean.index(titleClean.startIndex, offsetBy: ovStart)
+            let endIdx = titleClean.index(titleClean.startIndex, offsetBy: ovEnd)
+            if let attrRange = Range(startIdx..<endIdx, in: attributed) {
+                attributed[attrRange].backgroundColor = notesGold.opacity(0.38)
+            }
+        }
+        return attributed
     }
 
     private func highlightedCleanBodyText(
