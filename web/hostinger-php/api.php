@@ -1,7 +1,8 @@
 <?php
 declare(strict_types=1);
 
-$config = require __DIR__ . '/config.php';
+require_once __DIR__ . '/lib/bootstrap.php';
+$config = tw23_load_config(__DIR__);
 require_once __DIR__ . '/lib/base38.php';
 
 header('Content-Type: application/json; charset=utf-8');

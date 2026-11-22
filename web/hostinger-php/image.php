@@ -1,7 +1,8 @@
 <?php
 declare(strict_types=1);
 
-$config = require __DIR__ . '/config.php';
+require_once __DIR__ . '/lib/bootstrap.php';
+$config = tw23_load_config(__DIR__);
 
 $name = ltrim((string)($_GET['name'] ?? ''), '/');
 if ($name === '' && isset($_SERVER['REQUEST_URI'])) {

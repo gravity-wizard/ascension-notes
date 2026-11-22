@@ -15,6 +15,7 @@ cp "$SCRIPT_DIR/api.php" "$OUT_DIR/api.php"
 cp "$SCRIPT_DIR/image.php" "$OUT_DIR/image.php"
 cp "$SCRIPT_DIR/.htaccess" "$OUT_DIR/.htaccess"
 cp "$SCRIPT_DIR/lib/base38.php" "$OUT_DIR/lib/base38.php"
+cp "$SCRIPT_DIR/lib/bootstrap.php" "$OUT_DIR/lib/bootstrap.php"
 chmod 755 "$OUT_DIR/data" "$OUT_DIR/data/uploads"
 
 echo "Built Hostinger public_html bundle at: $OUT_DIR"
