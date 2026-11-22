@@ -143,7 +143,17 @@ struct UnifiedNoteTextView: NSViewRepresentable {
         textView.isAutomaticTextReplacementEnabled = enabled
     }
 
-    private static let imageMarkerRegex = try? NSRegularExpression(pattern: #"▸\[Image:[^\n\]]*\]"#)
+    static func createStandardParagraphStyle() -> NSMutableParagraphStyle {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 4
+        paragraph.defaultTabInterval = 48.0
+        var tabs: [NSTextTab] = []
+        for i in 1...32 {
+            tabs.append(NSTextTab(textAlignment: .left, location: CGFloat(i) * 48.0, options: [:]))
+        }
+        paragraph.tabStops = tabs
+        return paragraph
+    }
 
     private func applyAllTypography(to textView: AscensionNSTextView, defaultSize: Double, spans: [FontSizeSpan]) {
         let bodyFont = NSFont.systemFont(ofSize: defaultSize)
@@ -154,8 +164,7 @@ struct UnifiedNoteTextView: NSViewRepresentable {
         let foldBg = NSColor.systemYellow.withAlphaComponent(0.22)
         let imageBg = NSColor.systemBlue.withAlphaComponent(0.14)
 
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 4
+        let paragraph = Self.createStandardParagraphStyle()
 
         guard let storage = textView.textStorage else { return }
         let fullStr = storage.string as NSString
@@ -336,16 +345,17 @@ struct UnifiedNoteTextView: NSViewRepresentable {
 
             let charRange = text.rangeOfComposedCharacterSequence(at: sel.location - 1)
             let snippet = text.substring(with: charRange)
-            if snippet == "🔺" {
+            let cleanSnippet = snippet.trimmingCharacters(in: .whitespacesAndNewlines)
+            if cleanSnippet == "🔺" {
                 store.preemptRecentEmoji("🔺🔺")
                 return
             }
-            if snippet == "🔻" {
+            if cleanSnippet == "🔻" {
                 store.preemptRecentEmoji("🔻🔻")
                 return
             }
-            if Self.isEmojiString(snippet) {
-                store.preemptRecentEmoji(snippet)
+            if Self.isEmojiString(cleanSnippet) {
+                store.preemptRecentEmoji(cleanSnippet)
                 return
             }
 
@@ -364,29 +374,38 @@ struct UnifiedNoteTextView: NSViewRepresentable {
                 }
                 let forwardRange = text.rangeOfComposedCharacterSequence(at: sel.location)
                 let forwardSnippet = text.substring(with: forwardRange)
-                if forwardSnippet == "🔺" {
+                let cleanForward = forwardSnippet.trimmingCharacters(in: .whitespacesAndNewlines)
+                if cleanForward == "🔺" {
                     store.preemptRecentEmoji("🔺🔺")
                     return
                 }
-                if forwardSnippet == "🔻" {
+                if cleanForward == "🔻" {
                     store.preemptRecentEmoji("🔻🔻")
                     return
                 }
-                if Self.isEmojiString(forwardSnippet) {
-                    store.preemptRecentEmoji(forwardSnippet)
+                if Self.isEmojiString(cleanForward) {
+                    store.preemptRecentEmoji(cleanForward)
                 }
             }
         }
 
         static func isEmojiString(_ s: String) -> Bool {
-            guard !s.isEmpty else { return false }
-            for scalar in s.unicodeScalars {
-                if scalar.value < 0x2000 { return false }
-                if scalar.properties.isEmoji && (scalar.properties.isEmojiPresentation || scalar.value > 0x2388) {
-                    return true
+            let clean = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !clean.isEmpty else { return false }
+            var hasEmoji = false
+            for scalar in clean.unicodeScalars {
+                // Skip variation selectors (U+FE00...U+FE0F) and zero-width joiners (U+200D)
+                if (0xFE00...0xFE0F).contains(scalar.value) || scalar.value == 0x200D {
+                    continue
+                }
+                if scalar.value < 0x00A0 {
+                    return false
+                }
+                if scalar.properties.isEmoji {
+                    hasEmoji = true
                 }
             }
-            return false
+            return hasEmoji
         }
 
         func refreshCursorSpellTarget(on tv: AscensionNSTextView) {
@@ -482,6 +501,14 @@ struct UnifiedNoteTextView: NSViewRepresentable {
         ) -> NSMenu {
             let enriched = (baseMenu.copy() as? NSMenu) ?? NSMenu()
             enriched.insertItem(.separator(), at: 0)
+
+            let copyForAppleNotesItem = NSMenuItem(
+                title: "Copy for Apple Notes (Clean Plain Text)",
+                action: #selector(AscensionNSTextView.copyForAppleNotes(_:)),
+                keyEquivalent: ""
+            )
+            copyForAppleNotesItem.target = view
+            enriched.insertItem(copyForAppleNotesItem, at: 0)
 
             // Separate Text Size submenu (Only selected text grows/shrinks)
             let sizeMenu = NSMenu(title: "Text Size")
@@ -737,9 +764,7 @@ struct UnifiedNoteTextView: NSViewRepresentable {
             let foldFont = NSFont.monospacedSystemFont(ofSize: max(11.0, store.editorFontSize - 1.5), weight: .semibold)
             let imageMarkerFont = NSFont.monospacedSystemFont(ofSize: max(11.0, store.editorFontSize - 1.5), weight: .medium)
             let foldBg = NSColor.systemYellow.withAlphaComponent(0.22)
-            let imageBg = NSColor.systemBlue.withAlphaComponent(0.14)
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.lineSpacing = 4
+            let paragraph = UnifiedNoteTextView.createStandardParagraphStyle()
 
             let savedSelections = tv.selectedRanges
             let savedTyping = tv.typingAttributes
@@ -860,6 +885,32 @@ final class AscensionNSTextView: NSTextView {
             }
         }
         super.insertText(strToInsert, replacementRange: replacementRange)
+    }
+
+    // MARK: - Copy for Apple Notes & Clipboard Preservation
+    @objc func copyForAppleNotes(_ sender: Any?) {
+        let sel = selectedRange()
+        let ns = string as NSString
+        let textToCopy: String
+        if sel.location != NSNotFound && sel.length > 0 && sel.location + sel.length <= ns.length {
+            textToCopy = ns.substring(with: sel)
+        } else {
+            textToCopy = string
+        }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(textToCopy, forType: .string)
+    }
+
+    override func copy(_ sender: Any?) {
+        super.copy(sender)
+        // Ensure that plain text (.string) on pasteboard always has clean tabbed text
+        let sel = selectedRange()
+        let ns = string as NSString
+        if sel.location != NSNotFound && sel.length > 0 && sel.location + sel.length <= ns.length {
+            let textToCopy = ns.substring(with: sel)
+            NSPasteboard.general.setString(textToCopy, forType: .string)
+        }
     }
 
     func ensureFullLayoutAndFrame() {
@@ -983,8 +1034,7 @@ final class AscensionNSTextView: NSTextView {
         let defaultBody = CGFloat(coordinator?.store.editorFontSize ?? 15.0)
         let titleFont = NSFont.systemFont(ofSize: defaultBody + 7.0, weight: .bold)
         let bodyFont = NSFont.systemFont(ofSize: defaultBody)
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 4
+        let paragraph = UnifiedNoteTextView.createStandardParagraphStyle()
 
         let bodyAttrs: [NSAttributedString.Key: Any] = [
             .font: bodyFont,

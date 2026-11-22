@@ -154,6 +154,13 @@ struct AscensionNotesApp: App {
                 .keyboardShortcut("z", modifiers: [.command, .option])
             }
             CommandGroup(after: .pasteboard) {
+                Button("Copy for Apple Notes (Plain Text)") {
+                    #if os(macOS)
+                    _ = NSApp.sendAction(#selector(AscensionNSTextView.copyForAppleNotes(_:)), to: nil, from: nil)
+                    #endif
+                }
+                .keyboardShortcut("c", modifiers: [.command, .shift])
+
                 Button("Repeat / Multiply Emoji (\(store.lastInsertedEmoji))") {
                     store.repeatLastEmoji()
                 }
