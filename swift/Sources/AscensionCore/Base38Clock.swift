@@ -319,11 +319,9 @@ public enum Base38Clock: Sendable {
         msdCandidates.append("")
 
         for msdPrefix in msdCandidates {
-            // 1. Try picture/context & wholesome words (anchor - word, then anchor + word)
+            // 1. Prefer subtraction with picture/context & wholesome words (e.g. 2p5abc-gym)
             for word in wordPool {
                 guard let rhsVal = try? decode(word), rhsVal > 0 else { continue }
-
-                // Try subtraction: (elapsed + rhsVal) - word == elapsed
                 let plusAnchorVal = elapsed + rhsVal
                 if let plusAnchor = try? encode(plusAnchorVal),
                    plusAnchor.hasPrefix(msdPrefix),
@@ -340,29 +338,9 @@ public enum Base38Clock: Sendable {
                         )
                     }
                 }
-
-                // Try addition: (elapsed - rhsVal) + word == elapsed
-                if elapsed >= rhsVal {
-                    let minusAnchorVal = elapsed - rhsVal
-                    if let minusAnchor = try? encode(minusAnchorVal),
-                       minusAnchor.hasPrefix(msdPrefix),
-                       isCleanLowerAlnumClock(minusAnchor, blockedSubstrings: blockedSubstrings) {
-                        let expr = "\(minusAnchor)+\(word)"
-                        if expr.count <= maxLength {
-                            return ExactClockExpression(
-                                expression: expr,
-                                rawClock: rawClock,
-                                usedArithmeticWorkaround: true,
-                                preservedMSDPrefix: msdPrefix,
-                                contextWordUsed: word,
-                                unixSeconds: clampedUnix
-                            )
-                        }
-                    }
-                }
             }
 
-            // 2. Numeric Base-38 tiny delta fallback preserving MSDs
+            // 2. Prefer subtraction with tiny clean Base-38 offset (e.g. 2p5abc-offset)
             for step in Int64(1)...Int64(400) {
                 guard let delta = try? encode(step),
                       isCleanLowerAlnumClock(delta, blockedSubstrings: blockedSubstrings) else {
@@ -383,8 +361,37 @@ public enum Base38Clock: Sendable {
                         )
                     }
                 }
-                if elapsed >= step,
-                   let minusAnchor = try? encode(elapsed - step),
+            }
+
+            // 3. Addition fallback with picture/context & wholesome words (when near end of MSD range)
+            for word in wordPool {
+                guard let rhsVal = try? decode(word), rhsVal > 0, elapsed >= rhsVal else { continue }
+                let minusAnchorVal = elapsed - rhsVal
+                if let minusAnchor = try? encode(minusAnchorVal),
+                   minusAnchor.hasPrefix(msdPrefix),
+                   isCleanLowerAlnumClock(minusAnchor, blockedSubstrings: blockedSubstrings) {
+                    let expr = "\(minusAnchor)+\(word)"
+                    if expr.count <= maxLength {
+                        return ExactClockExpression(
+                            expression: expr,
+                            rawClock: rawClock,
+                            usedArithmeticWorkaround: true,
+                            preservedMSDPrefix: msdPrefix,
+                            contextWordUsed: word,
+                            unixSeconds: clampedUnix
+                        )
+                    }
+                }
+            }
+
+            // 4. Addition numeric Base-38 delta fallback preserving MSDs
+            for step in Int64(1)...Int64(400) {
+                guard elapsed >= step,
+                      let delta = try? encode(step),
+                      isCleanLowerAlnumClock(delta, blockedSubstrings: blockedSubstrings) else {
+                    continue
+                }
+                if let minusAnchor = try? encode(elapsed - step),
                    minusAnchor.hasPrefix(msdPrefix),
                    isCleanLowerAlnumClock(minusAnchor, blockedSubstrings: blockedSubstrings) {
                     let expr = "\(minusAnchor)+\(delta)"

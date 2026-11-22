@@ -307,6 +307,7 @@ def clean_exact_clock_expression(
     msd_candidates.append("")
 
     for msd_prefix in msd_candidates:
+        # 1. Prefer subtraction with picture/context & wholesome words (e.g. 2p5abc-gym)
         for word in word_pool:
             rhs_val = decode_base38(word)
             if rhs_val <= 0:
@@ -327,22 +328,7 @@ def clean_exact_clock_expression(
                         unix_seconds=clamped_unix,
                     )
 
-            if elapsed >= rhs_val:
-                minus_anchor = encode_base38(elapsed - rhs_val)
-                if minus_anchor.startswith(msd_prefix) and is_clean_lower_alnum_clock(
-                    minus_anchor, blocked_substrings=blocked_substrings
-                ):
-                    expr = f"{minus_anchor}+{word}"
-                    if len(expr) <= max_length:
-                        return ExactClockExpression(
-                            expression=expr,
-                            raw_clock=raw_clock,
-                            used_arithmetic_workaround=True,
-                            preserved_msd_prefix=msd_prefix,
-                            context_word_used=word,
-                            unix_seconds=clamped_unix,
-                        )
-
+        # 2. Prefer subtraction with tiny clean Base-38 offset (e.g. 2p5abc-offset)
         for step in range(1, 401):
             delta = encode_base38(step)
             if not is_clean_lower_alnum_clock(delta, blocked_substrings=blocked_substrings):
@@ -363,21 +349,49 @@ def clean_exact_clock_expression(
                         unix_seconds=clamped_unix,
                     )
 
-            if elapsed >= step:
-                minus_anchor = encode_base38(elapsed - step)
-                if minus_anchor.startswith(msd_prefix) and is_clean_lower_alnum_clock(
-                    minus_anchor, blocked_substrings=blocked_substrings
-                ):
-                    expr = f"{minus_anchor}+{delta}"
-                    if len(expr) <= max_length:
-                        return ExactClockExpression(
-                            expression=expr,
-                            raw_clock=raw_clock,
-                            used_arithmetic_workaround=True,
-                            preserved_msd_prefix=msd_prefix,
-                            context_word_used=None,
-                            unix_seconds=clamped_unix,
-                        )
+        # 3. Addition fallback with picture/context & wholesome words
+        for word in word_pool:
+            rhs_val = decode_base38(word)
+            if rhs_val <= 0 or elapsed < rhs_val:
+                continue
+
+            minus_anchor = encode_base38(elapsed - rhs_val)
+            if minus_anchor.startswith(msd_prefix) and is_clean_lower_alnum_clock(
+                minus_anchor, blocked_substrings=blocked_substrings
+            ):
+                expr = f"{minus_anchor}+{word}"
+                if len(expr) <= max_length:
+                    return ExactClockExpression(
+                        expression=expr,
+                        raw_clock=raw_clock,
+                        used_arithmetic_workaround=True,
+                        preserved_msd_prefix=msd_prefix,
+                        context_word_used=word,
+                        unix_seconds=clamped_unix,
+                    )
+
+        # 4. Addition numeric delta fallback preserving MSDs
+        for step in range(1, 401):
+            if elapsed < step:
+                continue
+            delta = encode_base38(step)
+            if not is_clean_lower_alnum_clock(delta, blocked_substrings=blocked_substrings):
+                continue
+
+            minus_anchor = encode_base38(elapsed - step)
+            if minus_anchor.startswith(msd_prefix) and is_clean_lower_alnum_clock(
+                minus_anchor, blocked_substrings=blocked_substrings
+            ):
+                expr = f"{minus_anchor}+{delta}"
+                if len(expr) <= max_length:
+                    return ExactClockExpression(
+                        expression=expr,
+                        raw_clock=raw_clock,
+                        used_arithmetic_workaround=True,
+                        preserved_msd_prefix=msd_prefix,
+                        context_word_used=None,
+                        unix_seconds=clamped_unix,
+                    )
 
     safe = safe_jesus_clock(clamped_unix, min_width=1, url_safe=False, blocked_substrings=blocked_substrings)
     delta = elapsed - (safe.effective_unix - T0UX)

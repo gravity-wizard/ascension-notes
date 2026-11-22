@@ -363,19 +363,36 @@ enum SmartImageRetitler {
         return stem.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private static func isReadableWord(_ word: String) -> Bool {
+        let lower = word.lowercased()
+        guard lower.count >= 2 && lower.count <= 13 else { return false }
+        if lower.count >= 6 && lower.allSatisfy({ $0.isHexDigit }) { return false }
+        let letters = lower.filter { $0 >= "a" && $0 <= "z" }
+        guard !letters.isEmpty else { return false }
+        let vowels = letters.filter { "aeiouy".contains($0) }.count
+        if letters.count >= 5 && vowels == 0 { return false }
+        #if os(macOS)
+        let spellRange = NSSpellChecker.shared.checkSpelling(of: word, startingAt: 0)
+        if spellRange.location == NSNotFound {
+            return true
+        }
+        #endif
+        return lower.count <= 8 && vowels >= 1
+    }
+
     private static func detectVisionSubject(cgImage: CGImage) -> (subject: String, contextWords: [String]) {
         #if canImport(Vision)
         let classifyRequest = VNClassifyImageRequest()
         let textRequest = VNRecognizeTextRequest()
-        textRequest.recognitionLevel = .fast
-        textRequest.usesLanguageCorrection = false
+        textRequest.recognitionLevel = .accurate
+        textRequest.usesLanguageCorrection = true
 
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
         try? handler.perform([classifyRequest, textRequest])
 
         var concreteLabels: [String] = []
         if let results = classifyRequest.results {
-            for obs in results where obs.confidence >= 0.30 {
+            for obs in results where obs.confidence >= 0.40 {
                 let rawID = obs.identifier.lowercased()
                 let human = visionAliases[rawID] ?? rawID
                     .replacingOccurrences(of: "_", with: " ")
@@ -388,31 +405,63 @@ enum SmartImageRetitler {
             }
         }
 
-        var ocrTitle: String? = nil
-        var ocrWords: [String] = []
+        var bestOCRTitle: String? = nil
+        var bestOCRWords: [String] = []
+        var bestOCRScore: Double = -1.0
+
         if let textResults = textRequest.results {
-            for obs in textResults.prefix(6) {
-                guard let candidate = obs.topCandidates(1).first?.string else { continue }
-                let words = candidate
+            for obs in textResults.prefix(30) {
+                guard let candidate = obs.topCandidates(1).first,
+                      candidate.confidence >= 0.50 else { continue }
+                let rawWords = candidate.string
                     .components(separatedBy: CharacterSet.alphanumerics.inverted)
-                    .filter { $0.count >= 2 }
-                if words.count >= 1 && words.count <= 4 {
-                    let joined = words.prefix(3).joined(separator: " ")
-                    if joined.count >= 4 && joined.count <= 26 {
-                        ocrTitle = joined
-                        ocrWords = Array(words.prefix(4))
-                        break
+                    .filter { $0.count >= 2 && $0.count <= 13 }
+                let goodWords = rawWords.filter { isReadableWord($0) }
+                guard !goodWords.isEmpty,
+                      goodWords.count * 2 >= rawWords.count else { continue }
+
+                var chosenWords: [String] = []
+                for w in goodWords {
+                    let next = (chosenWords + [w]).joined(separator: " ")
+                    if next.count > 26 { break }
+                    chosenWords.append(w)
+                    if chosenWords.count >= 3 { break }
+                }
+                let joined = chosenWords.joined(separator: " ")
+                guard joined.count >= 4 else { continue }
+
+                var realCount = 0
+                #if os(macOS)
+                for w in chosenWords {
+                    if NSSpellChecker.shared.checkSpelling(of: w, startingAt: 0).location == NSNotFound {
+                        realCount += 1
                     }
+                }
+                #else
+                realCount = chosenWords.count
+                #endif
+                guard realCount >= 1 else { continue }
+
+                let score = Double(realCount) * 3.0
+                    + Double(chosenWords.count) * 0.8
+                    + Double(obs.boundingBox.height) * 20.0
+                    + (obs.boundingBox.maxY > 0.7 ? 1.5 : 0.0)
+                    + Double(candidate.confidence)
+
+                if score > bestOCRScore {
+                    bestOCRScore = score
+                    bestOCRTitle = joined
+                    bestOCRWords = goodWords.map { $0.lowercased() }
                 }
             }
         }
 
         if let label = concreteLabels.first {
-            let context = label.components(separatedBy: CharacterSet.alphanumerics.inverted) + ocrWords
+            let context = label.components(separatedBy: CharacterSet.alphanumerics.inverted) + bestOCRWords
             return (label, context)
         }
-        if let ocrTitle {
-            return (ocrTitle, ocrWords)
+        if let bestOCRTitle {
+            return (bestOCRTitle, bestOCRWords)
         }
         #endif
         return ("Capture", ["capture"])
@@ -440,11 +489,14 @@ struct RenameAttachmentPopover: View {
         )
     }
 
+    private var exactTimestamp: Int64 {
+        attachment.exactUnixTimestamp ?? Int64(attachment.createdAt.timeIntervalSince1970)
+    }
+
     private var previewTag: String {
-        let exactTs = attachment.exactUnixTimestamp ?? Int64(attachment.createdAt.timeIntervalSince1970)
         let words = subjectDraft.components(separatedBy: CharacterSet.alphanumerics.inverted)
         return Base38Clock.cleanExactClockExpression(
-            unixSeconds: exactTs,
+            unixSeconds: exactTimestamp,
             contextWords: words,
             maxLength: 17
         ).expression
@@ -469,6 +521,10 @@ struct RenameAttachmentPopover: View {
                     .background(retinaGold.opacity(0.18))
                     .foregroundStyle(retinaGold)
                     .clipShape(RoundedRectangle(cornerRadius: 5))
+                Spacer()
+                Text(Date(timeIntervalSince1970: TimeInterval(exactTimestamp)).formatted(date: .omitted, time: .standard))
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
             }
 
             HStack {
