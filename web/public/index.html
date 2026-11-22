@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Twisted23.com · Base-38 Photo Naming Demo</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="container">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">T23</div>
+        <div>
+          <h1>Twisted23.com · Smart Photo Naming Demo</h1>
+          <div class="sub">Exact Base-38 UTC clock tags (`6-3` clean lowercase math) · Tier 0 / 1 / 2 Access</div>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <span class="pill" id="live-clock-pill" title="Live Base-38 UTC clock">Clock: ...</span>
+        <span class="pill tier-0" id="user-tier-pill">Level 0 · Open Link</span>
+        <button id="btn-open-login">Sign In (Base-38)</button>
+        <button class="primary" id="btn-open-register">Register (Level 1)</button>
+        <button class="teal hidden" id="btn-open-nda">Sign NDA (Level 2)</button>
+        <button class="sm hidden" id="btn-open-outbox">Dev Inbox</button>
+        <button class="sm hidden" id="btn-logout">Sign Out</button>
+      </div>
+    </header>
+
+    <!-- Access Tiers Strip -->
+    <section class="tier-grid">
+      <div class="tier-card active" id="card-tier-0">
+        <div class="tier-head">
+          <span>Level 0 · Open Link</span>
+          <span style="color: var(--blue);">Unlocked</span>
+        </div>
+        <div class="tier-desc">Anyone with the link can test exact Base-38 <code>6-3</code> naming on curated sample photos.</div>
+      </div>
+
+      <div class="tier-card" id="card-tier-1">
+        <div class="tier-head">
+          <span>Level 1 · Registered</span>
+          <span id="status-tier-1" style="color: var(--muted);">Locked</span>
+        </div>
+        <div class="tier-desc">Verify your email with your issued <code>6-3</code> Base-38 password to upload own photos &amp; save your 3-letter offset (e.g. <code>joy</code>, <code>sun</code>, initials).</div>
+      </div>
+
+      <div class="tier-card" id="card-tier-2">
+        <div class="tier-head">
+          <span>Level 2 · Signed NDA</span>
+          <span id="status-tier-2" style="color: var(--muted);">Locked</span>
+        </div>
+        <div class="tier-desc">Built-in e-signature unlocks EXIF capture extraction, multi-photo batch queue, &amp; A3odex/AXIF Markdown export.</div>
+      </div>
+    </section>
+
+    <!-- Photo Naming Studio -->
+    <main class="studio-grid">
+      <!-- Left Rail: Samples + Upload -->
+      <aside class="panel">
+        <h2>1. Choose or Upload Photo</h2>
+        <div class="sample-list" id="sample-list"></div>
+
+        <div class="dropzone" id="upload-dropzone">
+          <input type="file" id="file-input" accept="image/*" class="hidden" />
+          <div id="upload-lock-msg">
+            <strong>Own Photo Upload (Level 1+)</strong><br />
+            Register &amp; verify with your Base-38 password to upload single images, or sign the NDA for batch + EXIF.
+          </div>
+          <div id="upload-ready-msg" class="hidden">
+            <strong>Drop image here or click to upload</strong><br />
+            <span id="upload-mode-hint">Level 1: Single photo upload</span>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main Studio -->
+      <section class="panel">
+        <h2>2. Exact Base-38 Smart ReTiT1e</h2>
+        <div class="preview-stage">
+          <div class="preview-img-wrap">
+            <img id="preview-img" alt="Selected photo preview" />
+          </div>
+
+          <div>
+            <div class="field">
+              <label for="subject-input">Image Subject</label>
+              <input type="text" id="subject-input" placeholder="e.g. Weeping WilLoW Tree" />
+            </div>
+
+            <div class="field">
+              <label for="offset-input">
+                Favorite 3-Letter Offset
+                <span id="offset-tier-hint" style="color: var(--muted);">(Level 1+ saves to profile)</span>
+              </label>
+              <input type="text" id="offset-input" maxlength="12" placeholder="sun, joy, zen, or initials (hmf)" />
+              <div class="chip-row" id="offset-chips">
+                <button type="button" class="chip-btn" data-offset="">Auto</button>
+                <button type="button" class="chip-btn" data-offset="sun">sun</button>
+                <button type="button" class="chip-btn" data-offset="joy">joy</button>
+                <button type="button" class="chip-btn" data-offset="zen">zen</button>
+                <button type="button" class="chip-btn" data-offset="gem">gem</button>
+                <button type="button" class="chip-btn" data-offset="oak">oak</button>
+                <button type="button" class="chip-btn hidden" id="btn-save-offset">Save Default</button>
+              </div>
+            </div>
+
+            <div class="output-box">
+              <div style="font-size: 11px; color: var(--muted);">Clean Lowercase Tag &amp; Output Filename</div>
+              <div class="output-filename" id="output-filename">...</div>
+              <div class="meta-row">
+                <span>Tag: <strong id="output-tag">...</strong></span>
+                <span>MSD: <strong id="output-msd">...</strong></span>
+                <span>Source: <strong id="output-source">Sample</strong></span>
+                <span style="color: var(--teal);" id="output-exact">✓ exact ±0s</span>
+              </div>
+            </div>
+
+            <div class="chip-row" style="margin-top: 12px;">
+              <button class="primary" id="btn-download-renamed">Download Renamed PNG</button>
+              <button id="btn-copy-filename">Copy Filename</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Level 2 Section -->
+        <div class="l2-section" id="l2-workspace">
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;">
+            <div>
+              <strong>Level 2 · EXIF Batch Queue &amp; AXIF / A3odex Export</strong>
+              <div class="sub" style="font-size: 12px; color: var(--muted);" id="l2-subtitle">
+                Requires signed NDA (Level 2 Base-38 access).
+              </div>
+            </div>
+            <div class="chip-row" style="margin-top: 0;">
+              <button class="teal hidden" id="btn-l2-export-axif">Export AXIF Markdown Bundle</button>
+              <button class="sm hidden" id="btn-download-nda-receipt">Download NDA Receipt</button>
+            </div>
+          </div>
+
+          <div id="l2-locked-cta" style="margin-top: 10px;">
+            <button class="teal" id="btn-cta-nda">Unlock Level 2 via Built-in E-Sign NDA</button>
+          </div>
+
+          <table class="batch-table hidden" id="batch-table">
+            <thead>
+              <tr>
+                <th>Original File</th>
+                <th>Timestamp Source</th>
+                <th>Base-38 6-3 Tag</th>
+                <th>Renamed Output</th>
+              </tr>
+            </thead>
+            <tbody id="batch-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Register Modal (Level 1) -->
+  <div class="modal-backdrop" id="modal-register">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Register for Level 1 Access</h3>
+        <button class="sm" data-close="modal-register">✕</button>
+      </div>
+      <p style="font-size: 13px; color: var(--muted); margin-top: 0;">
+        We will mint a unique strict <code>6-3</code> Base-38 password (e.g. <code>2p4jgj-hmf</code>) and send it to your email. Entering it verifies your email and logs you in.
+      </p>
+      <form id="form-register">
+        <div class="field">
+          <label for="reg-name">Full Name</label>
+          <input type="text" id="reg-name" required placeholder="e.g. Norma Ascender" />
+        </div>
+        <div class="field">
+          <label for="reg-email">Email Address</label>
+          <input type="email" id="reg-email" required placeholder="you@example.com" />
+        </div>
+        <div class="field">
+          <label for="reg-offset">Favorite 3-Letter Offset or Initials (optional)</label>
+          <input type="text" id="reg-offset" maxlength="10" placeholder="joy, sun, or initials like hmf" />
+        </div>
+        <div style="display: flex; justify-content: flex-end; gap: 8px;">
+          <button type="button" data-close="modal-register">Cancel</button>
+          <button type="submit" class="primary">Send Level 1 Base-38 Password</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Login Modal -->
+  <div class="modal-backdrop" id="modal-login">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Sign In with Base-38 Password</h3>
+        <button class="sm" data-close="modal-login">✕</button>
+      </div>
+      <p style="font-size: 13px; color: var(--muted); margin-top: 0;">
+        Enter your emailed Level 1 or Level 2 <code>6-3</code> Base-38 access code.
+      </p>
+      <form id="form-login">
+        <div class="field">
+          <label for="login-password">Base-38 Password (10 chars, e.g. 2p4uop-sun)</label>
+          <input type="text" id="login-password" required style="font-family: var(--mono);" placeholder="2p4abc-xyz" />
+        </div>
+        <div class="field">
+          <label for="login-email">Email (optional confirmation)</label>
+          <input type="email" id="login-email" placeholder="you@example.com" />
+        </div>
+        <div style="display: flex; justify-content: flex-end; gap: 8px;">
+          <button type="button" data-close="modal-login">Cancel</button>
+          <button type="submit" class="primary">Verify &amp; Unlock</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- NDA Modal (Level 2) -->
+  <div class="modal-backdrop" id="modal-nda">
+    <div class="modal wide">
+      <div class="modal-header">
+        <h3>Level 2 Mutual Confidentiality NDA</h3>
+        <button class="sm" data-close="modal-nda">✕</button>
+      </div>
+      <div class="nda-box" id="nda-markdown-box">Loading agreement...</div>
+      <div style="font-size: 11px; font-family: var(--mono); color: var(--muted); margin-bottom: 10px;">
+        Agreement SHA-256: <span id="nda-template-sha">...</span>
+      </div>
+      <form id="form-nda">
+        <div class="field">
+          <label for="nda-legal-name">Full Legal Name</label>
+          <input type="text" id="nda-legal-name" required />
+        </div>
+        <div class="field">
+          <label for="nda-company">Role / Organization (optional)</label>
+          <input type="text" id="nda-company" placeholder="e.g. Independent Researcher" />
+        </div>
+        <div class="field">
+          <label for="nda-signature">Electronic Signature (Type your full legal name)</label>
+          <input type="text" id="nda-signature" required placeholder="/s/ Your Full Name" />
+        </div>
+        <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 14px; cursor: pointer;">
+          <input type="checkbox" id="nda-agreed" required style="width: auto;" />
+          I have read and agree to the Twisted23.com Level 2 Confidentiality Agreement.
+        </label>
+        <div style="display: flex; justify-content: flex-end; gap: 8px;">
+          <button type="button" data-close="modal-nda">Cancel</button>
+          <button type="submit" class="primary">Sign NDA &amp; Mint Level 2 Password</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Dev Outbox Modal -->
+  <div class="modal-backdrop" id="modal-outbox">
+    <div class="modal wide">
+      <div class="modal-header">
+        <h3>Local Dev Email Outbox</h3>
+        <button class="sm" data-close="modal-outbox">✕</button>
+      </div>
+      <p style="font-size: 12px; color: var(--muted); margin-top: 0;">
+        Emails minted in local dev mode (when <code>RESEND_API_KEY</code> is not set) appear here for 1-click testing.
+      </p>
+      <div id="outbox-list" style="display: grid; gap: 8px;"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
