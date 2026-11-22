@@ -18,14 +18,26 @@ private let notesGold = Color(red: 0.90, green: 0.64, blue: 0.08)
 #if os(macOS)
 @MainActor
 final class MacAppDelegate: NSObject, NSApplicationDelegate {
-    var onWillTerminate: (() -> Void)?
+    var onFlushAndSave: (() -> String?)?
     var onEnsureMainWindow: (() -> Void)?
+    private var windowCloseObserver: NSObjectProtocol?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.regular)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if windowCloseObserver == nil {
+            windowCloseObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    _ = self?.onFlushAndSave?()
+                }
+            }
+        }
         activateAndBringWindowsForward()
         Task { @MainActor [weak self] in
             await Task.yield()
@@ -50,8 +62,26 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    func applicationWillResignActive(_ notification: Notification) {
+        _ = onFlushAndSave?()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if let errorMessage = onFlushAndSave?() {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Could Not Save Notes Before Closing"
+            alert.informativeText = "\(errorMessage)\n\nCheck your Sync Folder permissions or quit without saving."
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Quit Anyway")
+            let response = alert.runModal()
+            return response == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
+        }
+        return .terminateNow
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
-        onWillTerminate?()
+        _ = onFlushAndSave?()
     }
 
     func activateAndBringWindowsForward() {
@@ -123,8 +153,10 @@ struct AscensionNotesApp: App {
                 .frame(minWidth: 940, minHeight: 600)
                 .onAppear {
                     let currentStore = store
-                    appDelegate.onWillTerminate = { [weak currentStore] in
-                        currentStore?.save()
+                    appDelegate.onFlushAndSave = { [weak currentStore] in
+                        guard let currentStore else { return nil }
+                        _ = currentStore.flushAndSave()
+                        return currentStore.lastSaveError
                     }
                     appDelegate.onEnsureMainWindow = { [openWindow] in
                         openWindow(id: "main")
@@ -145,7 +177,7 @@ struct AscensionNotesApp: App {
             }
             CommandGroup(replacing: .saveItem) {
                 Button("Save") {
-                    store.save()
+                    store.flushAndSave()
                 }
                 .keyboardShortcut("s", modifiers: .command)
             }

@@ -273,6 +273,7 @@ public enum TextViewQuickAction: Sendable {
     case learnOnly(String)
     case insertText(String)
     case revealRange(NSRange)
+    case flushAndSave
 }
 
 @MainActor
@@ -460,6 +461,7 @@ final class NotesStore {
     var activeSyncFolderURL: URL
     var lastSyncStatus: String = "Ready"
     var lastSyncDate: Date?
+    var lastSaveError: String? = nil
 
     private var storageURL: URL { activeSyncFolderURL.appendingPathComponent("notes.json") }
     private var backupURL: URL { activeSyncFolderURL.appendingPathComponent("notes.backup.json") }
@@ -1808,16 +1810,30 @@ final class NotesStore {
         }
     }
 
+    @discardableResult
+    func flushAndSave() -> Bool {
+        _ = activeTextViewActionHandler?(.flushAndSave)
+        save()
+        return lastSaveError == nil
+    }
+
     func save() {
         withFolderAccess(activeSyncFolderURL) {
             let dir = storageURL.deletingLastPathComponent()
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            if let data = try? JSONEncoder().encode(notes) {
+            do {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let data = try JSONEncoder().encode(notes)
                 if FileManager.default.fileExists(atPath: storageURL.path) {
                     try? FileManager.default.removeItem(at: backupURL)
                     try? FileManager.default.copyItem(at: storageURL, to: backupURL)
                 }
-                try? data.write(to: storageURL, options: .atomic)
+                try data.write(to: storageURL, options: .atomic)
+                lastSaveError = nil
+                lastSyncDate = Date()
+                lastSyncStatus = "Saved \(Date().formatted(date: .omitted, time: .shortened))"
+            } catch {
+                lastSaveError = error.localizedDescription
+                lastSyncStatus = "Save failed: \(error.localizedDescription)"
             }
         }
     }

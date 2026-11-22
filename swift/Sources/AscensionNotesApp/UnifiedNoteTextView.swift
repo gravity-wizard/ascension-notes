@@ -420,7 +420,25 @@ struct UnifiedNoteTextView: NSViewRepresentable {
                         tv.showFindIndicator(for: safeRange)
                     }
                     return true
+
+                case .flushAndSave:
+                    self.flushPendingEdits(on: tv)
+                    return true
                 }
+            }
+        }
+
+        func flushPendingEdits(on tv: AscensionNSTextView) {
+            if tv.hasMarkedText() {
+                tv.unmarkText()
+            }
+            let updated = tv.string
+            let spans = extractFontSpans(from: tv)
+            if updated != lastSyncedText {
+                lastSyncedText = updated
+                store.updateSelectedFullText(updated, fontSpans: spans)
+            } else {
+                store.updateSelectedFontSpans(spans)
             }
         }
 
@@ -429,6 +447,11 @@ struct UnifiedNoteTextView: NSViewRepresentable {
             DispatchQueue.main.async { [weak self] in
                 self?.store.cursorSpellTarget = nil
             }
+        }
+
+        func textDidEndEditing(_ notification: Notification) {
+            guard let tv = notification.object as? AscensionNSTextView else { return }
+            flushPendingEdits(on: tv)
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
