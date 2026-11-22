@@ -171,6 +171,13 @@ struct AscensionNotesApp: App {
                 }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
 
+                Button("Wrap in Directional Dittos (Equal Width)") {
+                    #if os(macOS)
+                    _ = NSApp.sendAction(#selector(AscensionNSTextView.wrapInDirectionalDittos(_:)), to: nil, from: nil)
+                    #endif
+                }
+                .keyboardShortcut("d", modifiers: [.command, .option])
+
                 Menu("Ascender Recent Emojis") {
                     ForEach(store.recentEmojis.prefix(16), id: \.self) { emoji in
                         Button(emoji) {

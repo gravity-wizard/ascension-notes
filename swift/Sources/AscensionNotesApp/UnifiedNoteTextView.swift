@@ -503,6 +503,14 @@ struct UnifiedNoteTextView: NSViewRepresentable {
             let enriched = (baseMenu.copy() as? NSMenu) ?? NSMenu()
             enriched.insertItem(.separator(), at: 0)
 
+            let wrapDittosItem = NSMenuItem(
+                title: "Wrap in Directional Dittos (Equal Width Banner)",
+                action: #selector(AscensionNSTextView.wrapInDirectionalDittos(_:)),
+                keyEquivalent: ""
+            )
+            wrapDittosItem.target = view
+            enriched.insertItem(wrapDittosItem, at: 0)
+
             let copyForAppleNotesItem = NSMenuItem(
                 title: "Copy for Apple Notes (Clean Plain Text)",
                 action: #selector(AscensionNSTextView.copyForAppleNotes(_:)),
@@ -889,6 +897,40 @@ final class AscensionNSTextView: NSTextView {
         super.insertText(strToInsert, replacementRange: replacementRange)
     }
 
+    // MARK: - Tab Key ("Using Tab Key gives nice separation ❗️")
+    override func insertTab(_ sender: Any?) {
+        // Insert 3 spaces instead of raw ASCII 9 tab so dittos maintain uniform separation and equal width across all apps
+        let targetRange = selectedRange()
+        if shouldChangeText(in: targetRange, replacementString: "   ") {
+            replaceCharacters(in: targetRange, with: "   ")
+            didChangeText()
+        } else {
+            insertText("   ", replacementRange: targetRange)
+        }
+    }
+
+    // MARK: - DirectionaL1a Dittos Equal Width Banner
+    @objc func wrapInDirectionalDittos(_ sender: Any?) {
+        let sel = selectedRange()
+        let ns = string as NSString
+        guard ns.length > 0 else { return }
+        let lineRange = ns.lineRange(for: NSRange(location: max(0, min(sel.location, ns.length - 1)), length: 0))
+        let lineText = ns.substring(with: lineRange).trimmingCharacters(in: .newlines)
+        guard !lineText.isEmpty else { return }
+
+        let count = max(2, Int(round(Double(lineText.count) / 7.0)))
+        let top = Array(repeating: "🔻🔻", count: count).joined(separator: "   ")
+        let bottom = Array(repeating: "🔺🔺", count: count).joined(separator: "   ")
+        let replacement = "\(top)\n\(lineText)\n\(bottom)\n"
+
+        if shouldChangeText(in: lineRange, replacementString: replacement) {
+            replaceCharacters(in: lineRange, with: replacement)
+            didChangeText()
+            let newEnd = lineRange.location + (replacement as NSString).length
+            setSelectedRange(NSRange(location: newEnd, length: 0))
+        }
+    }
+
     // MARK: - Copy for Apple Notes & Clipboard Preservation
     @objc func copyForAppleNotes(_ sender: Any?) {
         let sel = selectedRange()
@@ -899,19 +941,46 @@ final class AscensionNSTextView: NSTextView {
         } else {
             textToCopy = string
         }
+        // Expand any tabs to 3 spaces so Apple Notes' 28pt tab grid never collapses consecutive ditto pairs
+        let cleanText = textToCopy.replacingOccurrences(of: "\t", with: "   ")
         let pb = NSPasteboard.general
         pb.clearContents()
-        pb.setString(textToCopy, forType: .string)
+        pb.setString(cleanText, forType: .string)
+
+        // Write RTF with spaces to guarantee rich-text paste into Apple Notes maintains equal length
+        let attr = NSMutableAttributedString(string: cleanText)
+        let defaultBody = CGFloat(coordinator?.store.editorFontSize ?? 15.0)
+        let font = NSFont.systemFont(ofSize: defaultBody)
+        let paragraph = UnifiedNoteTextView.createStandardParagraphStyle()
+        attr.addAttributes([.font: font, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph], range: NSRange(location: 0, length: (cleanText as NSString).length))
+        if let rtfData = try? attr.data(from: NSRange(location: 0, length: (cleanText as NSString).length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]) {
+            pb.setData(rtfData, forType: .rtf)
+        }
     }
 
     override func copy(_ sender: Any?) {
         super.copy(sender)
-        // Ensure that plain text (.string) on pasteboard always has clean tabbed text
         let sel = selectedRange()
         let ns = string as NSString
+        let textToCopy: String
         if sel.location != NSNotFound && sel.length > 0 && sel.location + sel.length <= ns.length {
-            let textToCopy = ns.substring(with: sel)
-            NSPasteboard.general.setString(textToCopy, forType: .string)
+            textToCopy = ns.substring(with: sel)
+        } else {
+            textToCopy = string
+        }
+        // Expand tabs on copy to prevent Apple Notes 28pt tab grid from collapsing consecutive ditto pairs
+        let cleanText = textToCopy.replacingOccurrences(of: "\t", with: "   ")
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(cleanText, forType: .string)
+
+        let attr = NSMutableAttributedString(string: cleanText)
+        let defaultBody = CGFloat(coordinator?.store.editorFontSize ?? 15.0)
+        let font = NSFont.systemFont(ofSize: defaultBody)
+        let paragraph = UnifiedNoteTextView.createStandardParagraphStyle()
+        attr.addAttributes([.font: font, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph], range: NSRange(location: 0, length: (cleanText as NSString).length))
+        if let rtfData = try? attr.data(from: NSRange(location: 0, length: (cleanText as NSString).length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]) {
+            pb.setData(rtfData, forType: .rtf)
         }
     }
 
