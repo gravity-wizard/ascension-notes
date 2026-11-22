@@ -1,12 +1,15 @@
-# Twisted23.com · Base-38 Photo Naming Demo (`web/`)
+# Twisted23 Image Host (`web/`)
 
-Interactive web demo showcasing exact Base-38 `6-3` smart photo naming (`2p4uop-sun.png`) with three-tier access control:
+Minimal ImgBB-style image hosting with browser compression (`<= 575 KB`), optional custom slugs (`uncle-norman` or ultra-short 4-character links), and copy-ready embed snippets.
 
-- **Level 0 (Open Link):** Anyone with the link can explore curated sample photos, edit subjects, and generate exact Base-38 `6-3` filenames.
-- **Level 1 (Registered & Email-Verified):** Register with name, email, and an optional favorite 3-letter offset/initials (`joy`, `sun`, `hmf`). A personal 10-character `6-3` Base-38 password is sent to your email; signing in verifies your email in one step and unlocks custom single-photo uploads + persistent favorite offset preferences.
-- **Level 2 (Signed NDA):** Level 1 members sign the built-in mutual NDA (`nda_template.md`) with typed e-signature, exact Base-38 + UTC timestamp, and SHA-256 audit receipt hash to mint a Level 2 Base-38 password (`...-nda`) and unlock JPEG EXIF capture-time extraction, multi-photo batch naming, NDA receipt download, and AXIF Markdown export.
+## Features
 
-## Local Development (`macmini23` / local machine)
+- **Simple Drag / Drop / Paste Upload:** Instant upload with zero sign-up or friction.
+- **Ultra-Short or Custom Links:** Leave custom name blank for a 4-character slug (`/i/a9k2.webp`) or enter a custom name like `Uncle Norman` (`/i/uncle-norman.webp`).
+- **575 KB Bandwidth Budget:** Client `<canvas>` auto-compresses oversized images to WebP/JPEG `<= 575 KB` before upload; server enforces magic-byte validation (`PNG`/`JPEG`/`WebP`/`GIF`), byte limit (`575 KB`), daily IP rate limit (`TWISTED23_IP_DAILY_QUOTA`), and immutable CDN cache headers (`public, max-age=31536000, immutable`).
+- **Shareable Outputs:** Direct link, Viewer link (`/?img=...`), HTML `<img>`, HTML linked, BBCode, and Markdown, plus a `Download copy` local save option.
+
+## Local Run & Tests
 
 ```bash
 cd web
@@ -14,30 +17,11 @@ npm test
 npm start
 ```
 
-When `RESEND_API_KEY` is unset locally, minted Base-38 passwords appear automatically in the **Dev Inbox** (`GET /api/dev-outbox`) for 1-click testing.
-
-## Bandwidth-Capped Image Hosting & 0 KB Mode
-
-- **0 KB Local Rename Mode:** Pure browser Base-38 rename + JPEG EXIF `DateTimeOriginal` extraction with copy/download buttons and AXIF marker (`▸[Image: ...]`) — zero upload traffic.
-- **Host on Twisted23 (ImgBB Tags):** Adaptive client-side `<canvas>` WebP/JPEG compression enforces a configurable per-image byte budget (**575 KB default**, with **385 KB** & **57 KB** quick caps or `TWISTED23_MAX_IMAGE_BYTES` env/config) *before* upload.
-- **Hostinger + Cloudflare Guardrails:** Daily upload quotas (**L0: 0**, **L1: 10/day**, **L2: 50/day**), magic-byte validation (`WebP` / `JPEG` / `PNG`), explicit `Cloudflare-CDN-Cache-Control` + `CDN-Cache-Control: public, max-age=31536000, immutable` on `/i/*` & static assets (and `no-store` on `/api/*`), `ETag`/`304`, and optional Referer hotlink allowlist.
-- **ImgBB Outputs:** Direct `/i/<slug>` URL, `/?img=<slug>` viewer link, Markdown, Linked Markdown Badge, HTML Linked `<img>`, BBCode `[url][img]`, and Ascension AXIF marker.
-
-## Deploying to Hostinger Shared PHP Hosting (`Twisted23.com`)
+## Hostinger PHP Bundle
 
 ```bash
 cd web
 bash hostinger-php/build_package.sh
 ```
 
-Upload everything inside `web/dist/hostinger-public_html/` (including `.htaccess`) to Hostinger's `public_html/` directory (or add `HOSTINGER_FTP_SERVER`, `HOSTINGER_FTP_USERNAME`, `HOSTINGER_FTP_PASSWORD`, plus optional `CLOUDFLARE_ZONE_ID` & `CLOUDFLARE_API_TOKEN` as GitHub Actions secrets so [deploy-twisted23.yml](../.github/workflows/deploy-twisted23.yml) deploys automatically from GitHub). In Cloudflare Dashboard for `twisted23.com`, ensure the DNS record is **Proxied (Orange Cloud)** — `/i/*` and static assets automatically cache at Cloudflare's edge via `Cloudflare-CDN-Cache-Control`.
-
-## Deploying to Vercel (`Twisted23.com`)
-
-Set Vercel Root Directory to `web/` and configure environment variables:
-
-- `TWISTED23_AUTH_SECRET`: random 32+ char secret for HMAC blind indexes and `tw23_session` cookies
-- `TWISTED23_ADMIN_KEY`: secret for `/api/admin/audit` and `/api/admin/revoke` (`x-admin-key` header)
-- `TWISTED23_MAX_IMAGE_BYTES`: optional byte cap override (defaults to `588800` = 575 KB; set `394240` for 385 KB)
-- `RESEND_API_KEY` & `TWISTED23_FROM_EMAIL`: sends real Level 1 / Level 2 Base-38 password emails
-- `KV_REST_API_URL` & `KV_REST_API_TOKEN` (Vercel KV / Upstash Redis): persistent production store (falls back to `.data/twisted23-store.json` locally)
+Upload the contents of `web/dist/hostinger-public_html/` into Hostinger's `public_html/` (or a subfolder like `public_html/photo/`).

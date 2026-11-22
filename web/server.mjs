@@ -3,20 +3,10 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  handleAdminAudit,
-  handleAdminRevoke,
-  handleDevOutbox,
   handleGetImageMeta,
-  handleGetNda,
   handleHealth,
   handleImageUpload,
-  handleLogin,
-  handleLogout,
-  handlePreferences,
-  handleRegister,
   handleServeImage,
-  handleSession,
-  handleSignNda,
 } from "./lib/handlers.mjs";
 import { sendJson } from "./lib/http.mjs";
 import { defaultStore } from "./lib/store.mjs";
@@ -33,6 +23,7 @@ const MIME_TYPES = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".webp": "image/webp",
+  ".gif": "image/gif",
   ".svg": "image/svg+xml",
 };
 
@@ -43,13 +34,6 @@ export function createAppServer({ store = defaultStore } = {}) {
       const pathname = parsed.pathname;
 
       if (pathname === "/api/health") return await handleHealth(req, res);
-      if (pathname === "/api/session") return await handleSession(req, res, store);
-      if (pathname === "/api/register") return await handleRegister(req, res, store);
-      if (pathname === "/api/login") return await handleLogin(req, res, store);
-      if (pathname === "/api/logout") return await handleLogout(req, res);
-      if (pathname === "/api/preferences") return await handlePreferences(req, res, store);
-      if (pathname === "/api/nda") return await handleGetNda(req, res, store);
-      if (pathname === "/api/nda/sign") return await handleSignNda(req, res, store);
       if (pathname === "/api/images/upload") return await handleImageUpload(req, res, store);
       if (pathname.startsWith("/api/images/")) {
         const slug = pathname.slice("/api/images/".length);
@@ -59,18 +43,8 @@ export function createAppServer({ store = defaultStore } = {}) {
         const name = pathname.slice("/i/".length);
         return await handleServeImage(req, res, name, store);
       }
-      if (pathname === "/api/dev-outbox") return await handleDevOutbox(req, res, store);
-      if (pathname === "/api/admin/audit") return await handleAdminAudit(req, res, store);
-      if (pathname === "/api/admin/revoke") return await handleAdminRevoke(req, res, store);
       if (pathname.startsWith("/api/")) {
         return sendJson(res, 404, { ok: false, error: `Unknown API route: ${pathname}` });
-      }
-
-      if (pathname === "/lib/base38.mjs") {
-        const b38 = await fs.readFile(path.resolve(__dirname, "lib", "base38.mjs"));
-        res.statusCode = 200;
-        res.setHeader("Content-Type", "application/javascript; charset=utf-8");
-        return res.end(b38);
       }
 
       const relPath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
@@ -105,6 +79,6 @@ if (isMain) {
   const port = Number(process.env.PORT || 3023);
   const server = createAppServer();
   server.listen(port, "0.0.0.0", () => {
-    console.log(`Twisted23.com Photo Naming Demo listening on http://localhost:${port}`);
+    console.log(`Twisted23 Image Host listening on http://localhost:${port}`);
   });
 }

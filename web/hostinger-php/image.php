@@ -12,7 +12,7 @@ if ($name === '' && isset($_SERVER['REQUEST_URI'])) {
     }
 }
 
-if (!preg_match('/^[0-9a-z-]+\.(webp|jpg|png)$/', $name)) {
+if (!preg_match('/^[0-9a-z-]+\.(webp|jpg|png|gif)$/', $name)) {
     http_response_code(400);
     exit('Invalid image filename');
 }
@@ -27,7 +27,7 @@ if (!empty($allowed) && !empty($_SERVER['HTTP_REFERER'])) {
     }
 }
 
-$slug = preg_replace('/\.(webp|jpg|png)$/', '', $name);
+$slug = preg_replace('/\.(webp|jpg|png|gif)$/', '', $name);
 $storeFile = rtrim($config['data_dir'], '/') . '/twisted23-store.json';
 if (!is_file($storeFile)) {
     http_response_code(404);
