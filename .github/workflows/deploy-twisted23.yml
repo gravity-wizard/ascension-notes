@@ -56,6 +56,7 @@ jobs:
             echo "has_ftp=false" >> "$GITHUB_OUTPUT"
           fi
           target_dir="${FTP_DIR:-./}"
+          [[ "$target_dir" != */ ]] && target_dir="${target_dir}/"
           echo "ftp_dir=$target_dir" >> "$GITHUB_OUTPUT"
           if [[ -n "$CF_ZONE" && -n "$CF_TOKEN" ]]; then
             echo "has_cf=true" >> "$GITHUB_OUTPUT"
