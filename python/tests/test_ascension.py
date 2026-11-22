@@ -509,16 +509,30 @@ class SkipVowelsAndAttachmentTests(unittest.TestCase):
         self.assertTrue(is_clean_lower_alnum_clock(lhs))
         self.assertTrue(is_clean_lower_alnum_clock(rhs))
 
-        # Blocked substring ("2p7fuk", "2shit1") and ^/| ("2p7|^a") stay <=17 chars, [0-9a-z], lossless
+        # Blocked substring ("2p7fuk", "2shit1") and ^/| ("2p7|^a") produce strict 6-3 (9 digits + '-')
         for raw_bad in ("2p7fuk", "2shit1", "2p7|^a"):
             ts = decode_jesus_clock(raw_bad)
             res = clean_exact_clock_expression(ts, context_words=["Weeping", "willow", "tree"], max_length=17)
             self.assertTrue(res.used_arithmetic_workaround)
-            self.assertLessEqual(len(res.expression), 17)
+            self.assertEqual(len(res.expression), 10, res.expression)
+            self.assertIn("-", res.expression)
             self.assertNotIn("^", res.expression)
             self.assertNotIn("|", res.expression)
             self.assertEqual(decode_clock_expression(res.expression), ts)
             self.assertEqual(int(jesus_clock_expression_to_datetime(res.expression).timestamp()), ts)
+
+        # Stage-1 default capture tag on clean time ("2p41w2") with always_use_difference_formula=True
+        cap_ts = decode_jesus_clock("2p41w2")
+        cap_res = clean_exact_clock_expression(
+            cap_ts,
+            context_words=["capture"],
+            max_length=17,
+            always_use_difference_formula=True,
+        )
+        self.assertEqual(len(cap_res.expression), 10, cap_res.expression)
+        self.assertTrue(cap_res.expression.startswith("2p4"), cap_res.expression)
+        self.assertIn("-", cap_res.expression)
+        self.assertEqual(decode_clock_expression(cap_res.expression), cap_ts)
 
         # Explicit round-anchor check for "2p5000-334"
         expected_2p5000_minus_334 = decode_jesus_clock("2p5000") - decode_base38("334")

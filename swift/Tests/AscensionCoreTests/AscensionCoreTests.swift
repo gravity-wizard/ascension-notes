@@ -242,7 +242,7 @@ final class AscensionCoreTests: XCTestCase {
         XCTAssertLessThanOrEqual(gymExpr.expression.count, 17)
         XCTAssertEqual(try Base38Clock.decodeClockExpression(gymExpr.expression), gymTs)
 
-        // Symbols (^ / |) or blocked substring ("2p7fuk") rewrite to pure lowercase [0-9a-z] math
+        // Symbols (^ / |) or blocked substring ("2p7fuk") rewrite to pure lowercase [0-9a-z] 6-3 math
         for rawBad in ["2p7fuk", "2shit1", "2p7|^a"] {
             let ts = try Base38Clock.decodeJesusClock(rawBad)
             let res = Base38Clock.cleanExactClockExpression(
@@ -251,11 +251,24 @@ final class AscensionCoreTests: XCTestCase {
                 maxLength: 17
             )
             XCTAssertTrue(res.usedArithmeticWorkaround)
-            XCTAssertLessThanOrEqual(res.expression.count, 17)
+            XCTAssertEqual(res.expression.count, 10) // 6 digits + '-' + 3 digits = 9 Base-38 digits + '-'
+            XCTAssertTrue(res.expression.contains("-"))
             XCTAssertFalse(res.expression.contains("^"))
             XCTAssertFalse(res.expression.contains("|"))
             XCTAssertEqual(try Base38Clock.decodeClockExpression(res.expression), ts)
         }
+
+        // First-stage default capture tag on clean time ("2p41w2") with alwaysUseDifferenceFormula: true
+        let capTs = try Base38Clock.decodeJesusClock("2p41w2")
+        let capRes = Base38Clock.cleanExactClockExpression(
+            unixSeconds: capTs,
+            contextWords: ["capture"],
+            maxLength: 17,
+            alwaysUseDifferenceFormula: true
+        )
+        XCTAssertEqual(capRes.expression.count, 10) // 9 Base-38 digits + '-'
+        XCTAssertTrue(capRes.expression.hasPrefix("2p4"))
+        XCTAssertEqual(try Base38Clock.decodeClockExpression(capRes.expression), capTs)
 
         // Exact evaluation of "2p5000-334"
         let expected = try Base38Clock.decodeJesusClock("2p5000") - Base38Clock.decode("334")

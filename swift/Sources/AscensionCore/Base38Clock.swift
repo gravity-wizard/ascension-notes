@@ -256,19 +256,21 @@ public enum Base38Clock: Sendable {
 
     /// Formats an exact Unix timestamp as a clean lowercase Base-38 tag (<= maxLength chars).
     /// When the raw Base-38 string hits "666", a blocked word, or non-alnum symbols (^/|),
-    /// keeps the leading MSDs intact and emits a pretty lossless arithmetic formula
-    /// like `2p7n2s-gym` (using picture/context words first) or `2p7xx+word`.
+    /// keeps the leading MSDs intact (e.g. `2p` or `2p7`) and emits a pretty lossless
+    /// 9-digit + minus-sign formula (`2p7abc-xyz`, 6 digits minus 3 digits).
     public static func cleanExactClockExpression(
         unixSeconds: Int64 = Int64(Date().timeIntervalSince1970),
         contextWords: [String] = [],
         maxLength: Int = 17,
+        alwaysUseDifferenceFormula: Bool = false,
         blockedSubstrings: [String]? = nil
     ) -> ExactClockExpression {
         let clampedUnix = max(t0Unix, unixSeconds)
         let elapsed = clampedUnix - t0Unix
         let rawClock = (try? encode(elapsed)) ?? "0"
 
-        if rawClock.count <= maxLength,
+        if !alwaysUseDifferenceFormula,
+           rawClock.count <= maxLength,
            isCleanLowerAlnumClock(rawClock, blockedSubstrings: blockedSubstrings) {
             return ExactClockExpression(
                 expression: rawClock,
@@ -280,31 +282,46 @@ public enum Base38Clock: Sendable {
             )
         }
 
-        // Extract clean 2...6-char lowercase [a-z] picture words from contextWords
-        var normalizedWords: [String] = []
+        // Extract clean 3-char lowercase [a-z] picture words first (for 6-3 = 9 digits + '-'),
+        // then 2..5 char words as secondary fallback.
+        var threeCharContext: [String] = []
+        var otherContext: [String] = []
         var seenWords: Set<String> = []
         for rawWord in contextWords {
             let parts = rawWord
                 .lowercased()
                 .split { !($0 >= "a" && $0 <= "z") }
                 .map(String.init)
-            for part in parts where part.count >= 2 && part.count <= 6 {
-                if !seenWords.contains(part) && isCleanLowerAlnumClock(part, blockedSubstrings: blockedSubstrings) {
-                    seenWords.insert(part)
-                    normalizedWords.append(part)
+            for part in parts where part.count >= 2 && part.count <= 5 {
+                guard !seenWords.contains(part),
+                      isCleanLowerAlnumClock(part, blockedSubstrings: blockedSubstrings) else {
+                    continue
+                }
+                seenWords.insert(part)
+                if part.count == 3 {
+                    threeCharContext.append(part)
+                } else {
+                    otherContext.append(part)
                 }
             }
         }
 
-        var wordPool = normalizedWords
+        var threeCharFallback: [String] = []
+        var otherFallback: [String] = []
         for fallback in fallbackExactWords where !seenWords.contains(fallback) {
-            if isCleanLowerAlnumClock(fallback, blockedSubstrings: blockedSubstrings) {
-                seenWords.insert(fallback)
-                wordPool.append(fallback)
+            guard isCleanLowerAlnumClock(fallback, blockedSubstrings: blockedSubstrings) else { continue }
+            seenWords.insert(fallback)
+            if fallback.count == 3 {
+                threeCharFallback.append(fallback)
+            } else {
+                otherFallback.append(fallback)
             }
         }
 
-        // Determine candidate MSD prefixes from longest clean prefix down to 0
+        let preferred3WordPool = threeCharContext + threeCharFallback
+        let fullWordPool = preferred3WordPool + otherContext + otherFallback
+
+        // Candidate MSD prefixes from longest clean prefix (3 -> 2 -> 1 -> "")
         let rawChars = Array(rawClock)
         let maxMSD = max(0, min(3, rawChars.count - 2))
         var msdCandidates: [String] = []
@@ -318,12 +335,18 @@ public enum Base38Clock: Sendable {
         }
         msdCandidates.append("")
 
+        let targetAnchorDigits = rawClock.count
+
+        // First pass across MSD tiers (3 -> 2 -> 1 -> ""): strictly prefer 9 Base-38 digits + '-' (<anchor>-<3-char>)
+        let min3Digit = Int64(base * base)          // 1444 ("100")
+        let max3Digit = min3Digit + 1200            // plenty to find a clean anchor quickly
         for msdPrefix in msdCandidates {
-            // 1. Prefer subtraction with picture/context & wholesome words (e.g. 2p5abc-gym)
-            for word in wordPool {
+            // 1. Prefer strict 9-digit + '-' form: <targetAnchorDigits>-<3-char word> (e.g. 2p7n2s-gym)
+            for word in preferred3WordPool {
                 guard let rhsVal = try? decode(word), rhsVal > 0 else { continue }
                 let plusAnchorVal = elapsed + rhsVal
                 if let plusAnchor = try? encode(plusAnchorVal),
+                   plusAnchor.count == targetAnchorDigits,
                    plusAnchor.hasPrefix(msdPrefix),
                    isCleanLowerAlnumClock(plusAnchor, blockedSubstrings: blockedSubstrings) {
                     let expr = "\(plusAnchor)-\(word)"
@@ -340,7 +363,55 @@ public enum Base38Clock: Sendable {
                 }
             }
 
-            // 2. Prefer subtraction with tiny clean Base-38 offset (e.g. 2p5abc-offset)
+            // 2. Prefer strict 9-digit + '-' numeric 3-digit offset: 100_38 .. zzz_38 (e.g. 2p7abc-101)
+            for step in min3Digit...max3Digit {
+                guard let delta = try? encode(step),
+                      delta.count == 3,
+                      isCleanLowerAlnumClock(delta, blockedSubstrings: blockedSubstrings) else {
+                    continue
+                }
+                if let plusAnchor = try? encode(elapsed + step),
+                   plusAnchor.count == targetAnchorDigits,
+                   plusAnchor.hasPrefix(msdPrefix),
+                   isCleanLowerAlnumClock(plusAnchor, blockedSubstrings: blockedSubstrings) {
+                    let expr = "\(plusAnchor)-\(delta)"
+                    if expr.count <= maxLength {
+                        return ExactClockExpression(
+                            expression: expr,
+                            rawClock: rawClock,
+                            usedArithmeticWorkaround: true,
+                            preservedMSDPrefix: msdPrefix,
+                            contextWordUsed: nil,
+                            unixSeconds: clampedUnix
+                        )
+                    }
+                }
+            }
+        }
+
+        // Secondary fallback across MSD tiers if strict 6-3 subtraction is not possible
+        for msdPrefix in msdCandidates {
+            // 3. Other clean word lengths (2 or 4..5 char) subtraction
+            for word in fullWordPool where word.count != 3 {
+                guard let rhsVal = try? decode(word), rhsVal > 0 else { continue }
+                if let plusAnchor = try? encode(elapsed + rhsVal),
+                   plusAnchor.hasPrefix(msdPrefix),
+                   isCleanLowerAlnumClock(plusAnchor, blockedSubstrings: blockedSubstrings) {
+                    let expr = "\(plusAnchor)-\(word)"
+                    if expr.count <= maxLength {
+                        return ExactClockExpression(
+                            expression: expr,
+                            rawClock: rawClock,
+                            usedArithmeticWorkaround: true,
+                            preservedMSDPrefix: msdPrefix,
+                            contextWordUsed: word,
+                            unixSeconds: clampedUnix
+                        )
+                    }
+                }
+            }
+
+            // 4. Tiny offset subtraction (1..400) or addition fallback preserving MSDs
             for step in Int64(1)...Int64(400) {
                 guard let delta = try? encode(step),
                       isCleanLowerAlnumClock(delta, blockedSubstrings: blockedSubstrings) else {
@@ -363,11 +434,9 @@ public enum Base38Clock: Sendable {
                 }
             }
 
-            // 3. Addition fallback with picture/context & wholesome words (when near end of MSD range)
-            for word in wordPool {
+            for word in fullWordPool {
                 guard let rhsVal = try? decode(word), rhsVal > 0, elapsed >= rhsVal else { continue }
-                let minusAnchorVal = elapsed - rhsVal
-                if let minusAnchor = try? encode(minusAnchorVal),
+                if let minusAnchor = try? encode(elapsed - rhsVal),
                    minusAnchor.hasPrefix(msdPrefix),
                    isCleanLowerAlnumClock(minusAnchor, blockedSubstrings: blockedSubstrings) {
                     let expr = "\(minusAnchor)+\(word)"
@@ -378,30 +447,6 @@ public enum Base38Clock: Sendable {
                             usedArithmeticWorkaround: true,
                             preservedMSDPrefix: msdPrefix,
                             contextWordUsed: word,
-                            unixSeconds: clampedUnix
-                        )
-                    }
-                }
-            }
-
-            // 4. Addition numeric Base-38 delta fallback preserving MSDs
-            for step in Int64(1)...Int64(400) {
-                guard elapsed >= step,
-                      let delta = try? encode(step),
-                      isCleanLowerAlnumClock(delta, blockedSubstrings: blockedSubstrings) else {
-                    continue
-                }
-                if let minusAnchor = try? encode(elapsed - step),
-                   minusAnchor.hasPrefix(msdPrefix),
-                   isCleanLowerAlnumClock(minusAnchor, blockedSubstrings: blockedSubstrings) {
-                    let expr = "\(minusAnchor)+\(delta)"
-                    if expr.count <= maxLength {
-                        return ExactClockExpression(
-                            expression: expr,
-                            rawClock: rawClock,
-                            usedArithmeticWorkaround: true,
-                            preservedMSDPrefix: msdPrefix,
-                            contextWordUsed: nil,
                             unixSeconds: clampedUnix
                         )
                     }

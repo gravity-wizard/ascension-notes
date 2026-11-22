@@ -328,37 +328,44 @@ enum SmartImageRetitler {
             .replacingOccurrences(of: "_", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let subject: String
-        var contextWords: [String] = []
-
         if !isBoilerplateStem(stem) {
             let cleaned = stem.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
             let capped = cleaned.count > 32 ? String(cleaned.prefix(32)).trimmingCharacters(in: .whitespaces) : cleaned
-            subject = capped.isEmpty ? "Capture" : capped
-            contextWords = subject.components(separatedBy: CharacterSet.alphanumerics.inverted)
-        } else {
-            let vision = detectVisionSubject(cgImage: cgImage)
-            subject = vision.subject
-            contextWords = vision.contextWords
+            let subject = capped.isEmpty ? "Capture" : capped
+            let contextWords = subject.components(separatedBy: CharacterSet.alphanumerics.inverted)
+            let expr = Base38Clock.cleanExactClockExpression(
+                unixSeconds: exactUnixTimestamp,
+                contextWords: contextWords,
+                maxLength: 17,
+                alwaysUseDifferenceFormula: true
+            ).expression
+            if subject.contains(expr) {
+                return ("\(subject).png", expr)
+            }
+            return ("\(subject) \(expr).png", expr)
         }
 
+        // Stage 1 default name for raw captures: 9 Base-38 digits + '-' (e.g. 2p7abc-xyz.png)
+        let vision = detectVisionSubject(cgImage: cgImage)
         let expr = Base38Clock.cleanExactClockExpression(
             unixSeconds: exactUnixTimestamp,
-            contextWords: contextWords,
-            maxLength: 17
+            contextWords: vision.contextWords,
+            maxLength: 17,
+            alwaysUseDifferenceFormula: true
         ).expression
-
-        if subject.contains(expr) {
-            return ("\(subject).png", expr)
-        }
-        return ("\(subject) \(expr).png", expr)
+        return ("\(expr).png", expr)
     }
 
     static func editableSubject(from filename: String, base38Tag: String?) -> String {
         var stem = (filename as NSString).deletingPathExtension
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        if let tag = base38Tag, !tag.isEmpty, stem.hasSuffix(" \(tag)") {
-            stem = String(stem.dropLast(tag.count + 1))
+        if let tag = base38Tag, !tag.isEmpty {
+            if stem == tag {
+                return ""
+            }
+            if stem.hasSuffix(" \(tag)") {
+                stem = String(stem.dropLast(tag.count + 1))
+            }
         }
         return stem.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -498,7 +505,8 @@ struct RenameAttachmentPopover: View {
         return Base38Clock.cleanExactClockExpression(
             unixSeconds: exactTimestamp,
             contextWords: words,
-            maxLength: 17
+            maxLength: 17,
+            alwaysUseDifferenceFormula: true
         ).expression
     }
 

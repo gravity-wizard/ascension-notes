@@ -260,19 +260,22 @@ def clean_exact_clock_expression(
     *,
     context_words: Iterable[str] = (),
     max_length: int = 17,
+    always_use_difference_formula: bool = False,
     blocked_substrings: Iterable[str] | None = None,
 ) -> ExactClockExpression:
     """Format an exact timestamp as clean lowercase Base-38 (<= max_length chars).
 
     When the raw Base-38 value contains '666', a blocked word, or '^'/'|', keeps the leading
-    MSDs intact and returns a pretty lossless formula like '2p7n2s-gym' or '2p7k0a+joy'.
+    MSDs intact and emits a pretty 9-digit + minus-sign formula ('2p7abc-xyz').
     """
     clamped_unix = max(T0UX, coerce_unix_timestamp(timestamp))
     elapsed = clamped_unix - T0UX
     raw_clock = encode_base38(elapsed)
 
-    if len(raw_clock) <= max_length and is_clean_lower_alnum_clock(
-        raw_clock, blocked_substrings=blocked_substrings
+    if (
+        not always_use_difference_formula
+        and len(raw_clock) <= max_length
+        and is_clean_lower_alnum_clock(raw_clock, blocked_substrings=blocked_substrings)
     ):
         return ExactClockExpression(
             expression=raw_clock,
@@ -285,18 +288,32 @@ def clean_exact_clock_expression(
 
     import re
 
-    word_pool: list[str] = []
+    three_ctx: list[str] = []
+    other_ctx: list[str] = []
     seen: set[str] = set()
     for raw_word in context_words:
-        for part in re.findall(r"[a-z]{2,6}", raw_word.lower()):
-            if part not in seen and is_clean_lower_alnum_clock(part, blocked_substrings=blocked_substrings):
-                seen.add(part)
-                word_pool.append(part)
+        for part in re.findall(r"[a-z]{2,5}", raw_word.lower()):
+            if part in seen or not is_clean_lower_alnum_clock(part, blocked_substrings=blocked_substrings):
+                continue
+            seen.add(part)
+            if len(part) == 3:
+                three_ctx.append(part)
+            else:
+                other_ctx.append(part)
 
+    three_fb: list[str] = []
+    other_fb: list[str] = []
     for fallback in _FALLBACK_EXACT_WORDS:
-        if fallback not in seen and is_clean_lower_alnum_clock(fallback, blocked_substrings=blocked_substrings):
-            seen.add(fallback)
-            word_pool.append(fallback)
+        if fallback in seen or not is_clean_lower_alnum_clock(fallback, blocked_substrings=blocked_substrings):
+            continue
+        seen.add(fallback)
+        if len(fallback) == 3:
+            three_fb.append(fallback)
+        else:
+            other_fb.append(fallback)
+
+    preferred_3_pool = three_ctx + three_fb
+    full_word_pool = preferred_3_pool + other_ctx + other_fb
 
     max_msd = max(0, min(3, len(raw_clock) - 2))
     msd_candidates: list[str] = []
@@ -306,13 +323,64 @@ def clean_exact_clock_expression(
             msd_candidates.append(prefix)
     msd_candidates.append("")
 
+    target_anchor_digits = len(raw_clock)
+
+    # First pass across MSD tiers (3 -> 2 -> 1 -> ""): strictly prefer 9 Base-38 digits + '-' (<anchor>-<3-char>)
+    min_3_digit = B38_BASE * B38_BASE
     for msd_prefix in msd_candidates:
-        # 1. Prefer subtraction with picture/context & wholesome words (e.g. 2p5abc-gym)
-        for word in word_pool:
+        # 1. Prefer strict 9-digit + '-' form: <target_anchor_digits>-<3-char word> (e.g. 2p7n2s-gym)
+        for word in preferred_3_pool:
             rhs_val = decode_base38(word)
             if rhs_val <= 0:
                 continue
+            plus_anchor = encode_base38(elapsed + rhs_val)
+            if (
+                len(plus_anchor) == target_anchor_digits
+                and plus_anchor.startswith(msd_prefix)
+                and is_clean_lower_alnum_clock(plus_anchor, blocked_substrings=blocked_substrings)
+            ):
+                expr = f"{plus_anchor}-{word}"
+                if len(expr) <= max_length:
+                    return ExactClockExpression(
+                        expression=expr,
+                        raw_clock=raw_clock,
+                        used_arithmetic_workaround=True,
+                        preserved_msd_prefix=msd_prefix,
+                        context_word_used=word,
+                        unix_seconds=clamped_unix,
+                    )
 
+        # 2. Prefer strict 9-digit + '-' numeric 3-digit offset: 100_38 .. zzz_38 (e.g. 2p7abc-101)
+        for step in range(min_3_digit, min_3_digit + 1201):
+            delta = encode_base38(step)
+            if len(delta) != 3 or not is_clean_lower_alnum_clock(delta, blocked_substrings=blocked_substrings):
+                continue
+            plus_anchor = encode_base38(elapsed + step)
+            if (
+                len(plus_anchor) == target_anchor_digits
+                and plus_anchor.startswith(msd_prefix)
+                and is_clean_lower_alnum_clock(plus_anchor, blocked_substrings=blocked_substrings)
+            ):
+                expr = f"{plus_anchor}-{delta}"
+                if len(expr) <= max_length:
+                    return ExactClockExpression(
+                        expression=expr,
+                        raw_clock=raw_clock,
+                        used_arithmetic_workaround=True,
+                        preserved_msd_prefix=msd_prefix,
+                        context_word_used=None,
+                        unix_seconds=clamped_unix,
+                    )
+
+    # Secondary fallback across MSD tiers if strict 6-3 subtraction is not possible
+    for msd_prefix in msd_candidates:
+        # 3. Other word lengths subtraction fallback
+        for word in full_word_pool:
+            if len(word) == 3:
+                continue
+            rhs_val = decode_base38(word)
+            if rhs_val <= 0:
+                continue
             plus_anchor = encode_base38(elapsed + rhs_val)
             if plus_anchor.startswith(msd_prefix) and is_clean_lower_alnum_clock(
                 plus_anchor, blocked_substrings=blocked_substrings
@@ -328,12 +396,11 @@ def clean_exact_clock_expression(
                         unix_seconds=clamped_unix,
                     )
 
-        # 2. Prefer subtraction with tiny clean Base-38 offset (e.g. 2p5abc-offset)
+        # 4. Tiny offset subtraction (1..400) or addition fallback preserving MSDs
         for step in range(1, 401):
             delta = encode_base38(step)
             if not is_clean_lower_alnum_clock(delta, blocked_substrings=blocked_substrings):
                 continue
-
             plus_anchor = encode_base38(elapsed + step)
             if plus_anchor.startswith(msd_prefix) and is_clean_lower_alnum_clock(
                 plus_anchor, blocked_substrings=blocked_substrings
@@ -349,12 +416,10 @@ def clean_exact_clock_expression(
                         unix_seconds=clamped_unix,
                     )
 
-        # 3. Addition fallback with picture/context & wholesome words
-        for word in word_pool:
+        for word in full_word_pool:
             rhs_val = decode_base38(word)
             if rhs_val <= 0 or elapsed < rhs_val:
                 continue
-
             minus_anchor = encode_base38(elapsed - rhs_val)
             if minus_anchor.startswith(msd_prefix) and is_clean_lower_alnum_clock(
                 minus_anchor, blocked_substrings=blocked_substrings
@@ -367,29 +432,6 @@ def clean_exact_clock_expression(
                         used_arithmetic_workaround=True,
                         preserved_msd_prefix=msd_prefix,
                         context_word_used=word,
-                        unix_seconds=clamped_unix,
-                    )
-
-        # 4. Addition numeric delta fallback preserving MSDs
-        for step in range(1, 401):
-            if elapsed < step:
-                continue
-            delta = encode_base38(step)
-            if not is_clean_lower_alnum_clock(delta, blocked_substrings=blocked_substrings):
-                continue
-
-            minus_anchor = encode_base38(elapsed - step)
-            if minus_anchor.startswith(msd_prefix) and is_clean_lower_alnum_clock(
-                minus_anchor, blocked_substrings=blocked_substrings
-            ):
-                expr = f"{minus_anchor}+{delta}"
-                if len(expr) <= max_length:
-                    return ExactClockExpression(
-                        expression=expr,
-                        raw_clock=raw_clock,
-                        used_arithmetic_workaround=True,
-                        preserved_msd_prefix=msd_prefix,
-                        context_word_used=None,
                         unix_seconds=clamped_unix,
                     )
 

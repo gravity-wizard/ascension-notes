@@ -1795,7 +1795,8 @@ final class NotesStore {
         _ attachment: NoteAttachment,
         in noteID: UUID,
         subjectInput: String,
-        appendBase38Tag: Bool = true
+        appendBase38Tag: Bool = true,
+        alwaysUseDifferenceFormula: Bool = true
     ) -> NoteAttachment? {
         let trimmedSubject = subjectInput
             .replacingOccurrences(of: ".png", with: "", options: .caseInsensitive)
@@ -1806,12 +1807,13 @@ final class NotesStore {
         let clockExpr = Base38Clock.cleanExactClockExpression(
             unixSeconds: exactTs,
             contextWords: contextWords,
-            maxLength: 17
+            maxLength: 17,
+            alwaysUseDifferenceFormula: alwaysUseDifferenceFormula
         ).expression
 
         let finalStem: String
         if trimmedSubject.isEmpty {
-            finalStem = "Capture \(clockExpr)"
+            finalStem = clockExpr
         } else if appendBase38Tag && !trimmedSubject.contains(clockExpr) {
             finalStem = "\(trimmedSubject) \(clockExpr)"
         } else {
