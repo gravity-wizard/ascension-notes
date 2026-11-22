@@ -622,6 +622,8 @@ export async function handleServeImage(req, res, filenameInput, store = defaultS
   if (req.headers["if-none-match"] && req.headers["if-none-match"] === record.etag) {
     res.statusCode = 304;
     res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    res.setHeader("CDN-Cache-Control", "public, max-age=31536000, immutable");
+    res.setHeader("Cloudflare-CDN-Cache-Control", "public, max-age=31536000, immutable");
     res.setHeader("ETag", record.etag);
     return res.end();
   }
@@ -636,6 +638,8 @@ export async function handleServeImage(req, res, filenameInput, store = defaultS
   res.setHeader("Content-Type", record.mime);
   res.setHeader("Content-Length", String(blob.length));
   res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+  res.setHeader("CDN-Cache-Control", "public, max-age=31536000, immutable");
+  res.setHeader("Cloudflare-CDN-Cache-Control", "public, max-age=31536000, immutable");
   res.setHeader("ETag", record.etag);
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.end(blob);

@@ -1,13 +1,13 @@
 import crypto from "node:crypto";
 import { cleanExactClockExpression } from "./base38.mjs";
 
-export const DEFAULT_MAX_IMAGE_BYTES = Number(process.env.TWISTED23_MAX_IMAGE_BYTES || 570 * 1024);
+export const DEFAULT_MAX_IMAGE_BYTES = Number(process.env.TWISTED23_MAX_IMAGE_BYTES || 575 * 1024);
 export const L1_DAILY_UPLOAD_QUOTA = Number(process.env.TWISTED23_L1_DAILY_QUOTA || 10);
 export const L2_DAILY_UPLOAD_QUOTA = Number(process.env.TWISTED23_L2_DAILY_QUOTA || 50);
 
 export function getMaxImageBytes() {
   const val = Number(process.env.TWISTED23_MAX_IMAGE_BYTES || DEFAULT_MAX_IMAGE_BYTES);
-  return Number.isFinite(val) && val > 0 ? val : 570 * 1024;
+  return Number.isFinite(val) && val > 0 ? val : 575 * 1024;
 }
 
 export function getDailyQuotaForTier(tier) {

@@ -76,8 +76,8 @@ const SAMPLES = [
 ];
 
 let currentUser = { authenticated: false, tier: 0, favoriteOffset: "" };
-let hostingLimits = { maxImageBytes: 570 * 1024, dailyQuota: 0, dailyUsed: 0, dailyRemaining: 0 };
-let selectedCapKb = 570;
+let hostingLimits = { maxImageBytes: 575 * 1024, dailyQuota: 0, dailyUsed: 0, dailyRemaining: 0 };
+let selectedCapKb = 575;
 let devOutboxAvailable = false;
 let selectedPhoto = null;
 let batchItems = [];
@@ -265,7 +265,7 @@ function syncAuthUi() {
   document.getElementById("btn-open-outbox").classList.toggle("hidden", !devOutboxAvailable);
 
   const quotaBadge = document.getElementById("host-quota-badge");
-  const serverMaxKb = Math.round((hostingLimits.maxImageBytes || 570 * 1024) / 1024);
+  const serverMaxKb = Math.round((hostingLimits.maxImageBytes || 575 * 1024) / 1024);
   if (tier >= 1) {
     quotaBadge.textContent = `Today: ${hostingLimits.dailyRemaining}/${hostingLimits.dailyQuota} left · Server cap ${serverMaxKb} KB`;
     document.getElementById("btn-host-image").disabled = hostingLimits.dailyRemaining <= 0;
@@ -503,7 +503,7 @@ document.querySelectorAll("#offset-chips .chip-btn[data-offset]").forEach((btn) 
 
 document.querySelectorAll("#cap-chips .chip-btn[data-cap]").forEach((btn) => {
   btn.addEventListener("click", () => {
-    selectedCapKb = Number(btn.dataset.cap) || 570;
+    selectedCapKb = Number(btn.dataset.cap) || 575;
     document.querySelectorAll("#cap-chips .chip-btn[data-cap]").forEach((b) => {
       b.classList.toggle("active", b === btn);
     });
@@ -518,7 +518,7 @@ document.getElementById("btn-host-image").addEventListener("click", async () => 
     return;
   }
   const statusEl = document.getElementById("compress-status");
-  const serverMax = hostingLimits.maxImageBytes || 570 * 1024;
+  const serverMax = hostingLimits.maxImageBytes || 575 * 1024;
   const targetMax = Math.min(selectedCapKb * 1024, serverMax);
   try {
     statusEl.textContent = `Compressing <= ${Math.round(targetMax / 1024)} KB in browser...`;

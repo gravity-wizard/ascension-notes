@@ -5,7 +5,9 @@ $config = require __DIR__ . '/config.php';
 require_once __DIR__ . '/lib/base38.php';
 
 header('Content-Type: application/json; charset=utf-8');
-header('Cache-Control: no-store');
+header('Cache-Control: no-store, private');
+header('CDN-Cache-Control: no-store');
+header('Cloudflare-CDN-Cache-Control: no-store');
 
 function json_out(int $code, array $payload): never {
     http_response_code($code);
@@ -456,7 +458,7 @@ if ($route === 'nda/sign' && $method === 'POST') {
             'signedAtBase38' => $b38Tag,
             'signedAtUnix' => $now,
             'templateSha256' => $tplSha,
-            'clientIp' => $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1',
+            'clientIp' => $_SERVER['HTTP_CF_CONNECTING_IP'] ?? ($_SERVER['REMOTE_ADDR'] ?? '127.0.0.1'),
             'userAgent' => $_SERVER['HTTP_USER_AGENT'] ?? 'unknown',
         ];
         $receipt['receiptHash'] = hash('sha256', (string)json_encode($receipt));

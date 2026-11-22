@@ -1,6 +1,6 @@
 /**
  * Adaptive client-side Canvas image compressor for Twisted23.com.
- * Guarantees compressed WebP/JPEG output is <= targetMaxBytes (e.g. 570 KB, 385 KB, or 57 KB)
+ * Guarantees compressed WebP/JPEG output is <= targetMaxBytes (e.g. 575 KB, 385 KB, or 57 KB)
  * BEFORE sending bytes over Hostinger's upload/egress pipe.
  */
 
@@ -22,7 +22,7 @@ function blobToBase64(blob) {
   });
 }
 
-export async function compressDataUrlToBudget(dataUrl, { maxBytes = 570 * 1024 } = {}) {
+export async function compressDataUrlToBudget(dataUrl, { maxBytes = 575 * 1024 } = {}) {
   const img = await new Promise((resolve, reject) => {
     const el = new Image();
     el.onload = () => resolve(el);

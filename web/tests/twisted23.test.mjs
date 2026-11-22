@@ -153,16 +153,17 @@ test("End-to-end Tier 0 -> Level 1 Register/Verify -> Level 2 NDA E-Sign -> Admi
     body = await res.json();
     assert.equal(body.user.favoriteOffset, "joy");
 
-    // 6b. Reject invalid non-image bytes and oversized (> 570 KB) image uploads
+    // 6b. Reject invalid non-image bytes and oversized (> 575 KB) image uploads
     res = await fetch(`${baseUrl}/api/images/upload`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
       body: JSON.stringify({ dataBase64: Buffer.from("not-an-image-at-all").toString("base64") }),
     });
     assert.equal(res.status, 400);
+    assert.equal(res.headers.get("cloudflare-cdn-cache-control"), "no-store");
 
     const validPngHead = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52]);
-    const oversizedPng = Buffer.concat([validPngHead, Buffer.alloc(571 * 1024)]);
+    const oversizedPng = Buffer.concat([validPngHead, Buffer.alloc(576 * 1024)]);
     res = await fetch(`${baseUrl}/api/images/upload`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
@@ -170,7 +171,7 @@ test("End-to-end Tier 0 -> Level 1 Register/Verify -> Level 2 NDA E-Sign -> Admi
     });
     assert.equal(res.status, 413);
 
-    // 6c. Valid <= 570 KB PNG upload -> returns ImgBB snippets & immutable cached /i/ URL
+    // 6c. Valid <= 575 KB PNG upload -> returns ImgBB snippets & Cloudflare-cached /i/ URL
     const tinyPng = Buffer.concat([validPngHead, Buffer.from("Twisted23SamplePixels")]);
     res = await fetch(`${baseUrl}/api/images/upload`, {
       method: "POST",
@@ -184,6 +185,7 @@ test("End-to-end Tier 0 -> Level 1 Register/Verify -> Level 2 NDA E-Sign -> Admi
     assert.equal(res.status, 200);
     body = await res.json();
     assert.equal(body.image.base38Tag, "2p4lj0-joy");
+    assert.equal(body.hosting.maxImageBytes, 575 * 1024);
     assert.equal(body.hosting.dailyRemaining, 9);
     assert.ok(body.image.snippets.directUrl.includes("/i/2p4lj0-joy-"));
     assert.ok(body.image.snippets.markdownLinked.includes("[![Weeping Willow 2p4lj0-joy]"));
@@ -191,11 +193,13 @@ test("End-to-end Tier 0 -> Level 1 Register/Verify -> Level 2 NDA E-Sign -> Admi
     assert.ok(body.image.snippets.bbcodeLinked.includes("[url="));
     assert.ok(body.image.snippets.axifMarker.startsWith("▸[Image: Weeping Willow 2p4lj0-joy.png #"));
 
-    // Fetch /i/<storedFilename> and verify immutable caching + 304 ETag
+    // Fetch /i/<storedFilename> and verify Cloudflare + browser immutable caching + 304 ETag
     const imgUrl = new URL(body.image.snippets.directUrl).pathname;
     const imgRes = await fetch(`${baseUrl}${imgUrl}`);
     assert.equal(imgRes.status, 200);
     assert.equal(imgRes.headers.get("cache-control"), "public, max-age=31536000, immutable");
+    assert.equal(imgRes.headers.get("cdn-cache-control"), "public, max-age=31536000, immutable");
+    assert.equal(imgRes.headers.get("cloudflare-cdn-cache-control"), "public, max-age=31536000, immutable");
     const etag = imgRes.headers.get("etag");
     assert.ok(etag);
     const cached304 = await fetch(`${baseUrl}${imgUrl}`, { headers: { "If-None-Match": etag } });

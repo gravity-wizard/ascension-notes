@@ -48,6 +48,8 @@ if (!is_file($blobPath)) {
 
 $etag = $rec['etag'] ?? ('"' . md5_file($blobPath) . '"');
 header('Cache-Control: public, max-age=31536000, immutable');
+header('CDN-Cache-Control: public, max-age=31536000, immutable');
+header('Cloudflare-CDN-Cache-Control: public, max-age=31536000, immutable');
 header('ETag: ' . $etag);
 header('X-Content-Type-Options: nosniff');
 

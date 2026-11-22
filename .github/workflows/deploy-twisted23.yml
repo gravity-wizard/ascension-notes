@@ -1,0 +1,62 @@
+name: Test & Deploy Twisted23 Web
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - "python/**"
+      - ".github/workflows/deploy-twisted23.yml"
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Setup PHP 8.2
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+
+      - name: Run Python core unit tests
+        run: python3 -m unittest discover -s python/tests -p "test_*.py" -v
+
+      - name: Run Twisted23 web integration & cache tests
+        run: cd web && npm test
+
+      - name: Lint Hostinger PHP files & build bundle
+        run: |
+          cd web
+          for f in hostinger-php/*.php hostinger-php/lib/*.php; do php -l "$f"; done
+          bash hostinger-php/build_package.sh
+
+      - name: Upload Hostinger public_html bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: twisted23-hostinger-public_html
+          path: web/dist/hostinger-public_html
+
+      - name: Deploy to Hostinger via FTPS (if secrets configured)
+        if: ${{ secrets.HOSTINGER_FTP_SERVER != '' && secrets.HOSTINGER_FTP_USERNAME != '' }}
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.HOSTINGER_FTP_SERVER }}
+          username: ${{ secrets.HOSTINGER_FTP_USERNAME }}
+          password: ${{ secrets.HOSTINGER_FTP_PASSWORD }}
+          local-dir: web/dist/hostinger-public_html/
+          server-dir: ${{ secrets.HOSTINGER_FTP_DIR || './' }}
+          exclude: |
+            data/**
+            config.php
+
+      - name: Purge Cloudflare static HTML cache on deploy (if secrets configured)
+        if: ${{ secrets.CLOUDFLARE_ZONE_ID != '' && secrets.CLOUDFLARE_API_TOKEN != '' }}
+        run: |
+          curl -fsS -X POST "https://api.cloudflare.com/client/v4/zones/${{ secrets.CLOUDFLARE_ZONE_ID }}/purge_cache" \
+            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            --data '{"files":["https://twisted23.com/","https://twisted23.com/index.html","https://twisted23.com/app.js","https://twisted23.com/styles.css"]}'

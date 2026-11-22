@@ -7,6 +7,10 @@ export function isHttpsRequest(req) {
 }
 
 export function getClientIp(req) {
+  const cfIp = req.headers["cf-connecting-ip"];
+  if (typeof cfIp === "string" && cfIp.trim()) {
+    return cfIp.trim();
+  }
   const fwd = req.headers["x-forwarded-for"];
   if (typeof fwd === "string" && fwd.trim()) {
     return fwd.split(",")[0].trim();
@@ -38,7 +42,9 @@ export async function readJsonBody(req, maxBytes = 1024 * 256) {
 export function sendJson(res, statusCode, payload, { setCookie = null } = {}) {
   res.statusCode = statusCode;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Cache-Control", "no-store, private");
+  res.setHeader("CDN-Cache-Control", "no-store");
+  res.setHeader("Cloudflare-CDN-Cache-Control", "no-store");
   if (setCookie) {
     res.setHeader("Set-Cookie", setCookie);
   }

@@ -2,8 +2,8 @@
 declare(strict_types=1);
 
 return [
-    // Configurable per-image cap: e.g. 570 KB (583680), 385 KB (394240), or 57 KB (58368)
-    'max_image_bytes' => (int)(getenv('TWISTED23_MAX_IMAGE_BYTES') ?: 570 * 1024),
+    // Configurable per-image cap: e.g. 575 KB (588800), 385 KB (394240), or 57 KB (58368)
+    'max_image_bytes' => (int)(getenv('TWISTED23_MAX_IMAGE_BYTES') ?: 575 * 1024),
     'l1_daily_quota'  => (int)(getenv('TWISTED23_L1_DAILY_QUOTA') ?: 10),
     'l2_daily_quota'  => (int)(getenv('TWISTED23_L2_DAILY_QUOTA') ?: 50),
 
