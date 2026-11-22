@@ -76,9 +76,20 @@ struct HelpGuideView: View {
                 )
 
                 helpSection(
-                    icon: "face.smiling",
-                    title: "Repeat Emoji (Cmd + D) & AAid (Emergency Medical Search Keyword)",
+                    icon: "terminal",
+                    title: "HOW2OPEN in 2 Steps (Mac Terminal)",
                     bullets: [
+                        "Step 1: Open your local ascension-notes folder: cd \"$(find ~ -maxdepth 4 -type d -name 'ascension-notes' 2>/dev/null | head -n 1)/swift\"",
+                        "Step 2: Launch directly with: swift run AscensionNotesApp (or run ../scripts/open_xcode.sh, pick AscensionNotesApp > My Mac, and press Cmd + R)."
+                    ]
+                )
+
+                helpSection(
+                    icon: "face.smiling",
+                    title: "Repeat Emoji (Cmd + D), Cross-Out & 1-Step Copy with Images",
+                    bullets: [
+                        "Cross-Out / Strikethrough (Cmd + Shift + X or Right-Click -> Format Block -> Cross-Out): Wraps or unwraps ~~text~~ and renders live strikethrough in Edit & Clean View.",
+                        "1-Step Copy with Images for Apple Notes (Cmd + A then Cmd + C, or Cmd + Shift + C): When copying a note with screenshots, asks which attached images to include and pastes text + Retina PNGs together into Apple Notes in one Cmd + V!",
                         "DirectionaL1a Dittos Banner (Cmd + Opt + D): Automatically wraps any line of text in an equal-width DownDitto (🔻🔻) ceiling and UpDitto (🔺🔺) floor with mathematically matched widths.",
                         "DirectionaL1a Dittos5 RuLe5: When you see DownDittos (🔻🔻), Look Down ❗️; when you see UpDittos (🔺🔺), Look Up ❗️ to frame attention-worthy text.",
                         "Tab Key Smart Separation: Pressing Tab inserts 3 spaces ('   ') giving nice visual separation that never collapses into 🔻🔻🔻🔻 at Apple Notes' 28pt tab boundaries.",

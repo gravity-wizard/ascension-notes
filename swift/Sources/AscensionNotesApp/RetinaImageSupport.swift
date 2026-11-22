@@ -562,4 +562,138 @@ enum CleanViewAttachmentLayout {
         return (segments, unreferenced)
     }
 }
+
+#if os(macOS)
+struct CopyWithImagesSheet: View {
+    @Bindable var store: NotesStore
+    let request: CopyWithImagesRequest
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.displayScale) private var displayScale
+    @State private var selectedIDs: Set<UUID>
+    @State private var expandTabs: Bool = true
+
+    init(store: NotesStore, request: CopyWithImagesRequest) {
+        self.store = store
+        self.request = request
+        _selectedIDs = State(initialValue: request.preselectedAttachmentIDs)
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    Text("Choose which images to embed alongside your copied text (RTFD + PNGs paste directly into Apple Notes in 1 step):")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+
+                HStack(spacing: 8) {
+                    Button("Select All (\(request.attachments.count))") {
+                        selectedIDs = Set(request.attachments.map(\.id))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    Button("Text Only (None)") {
+                        selectedIDs.removeAll()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    Spacer()
+
+                    Toggle("Expand tabs (3 spaces)", isOn: $expandTabs)
+                        .toggleStyle(.checkbox)
+                        .font(.caption)
+                }
+
+                ScrollView {
+                    VStack(spacing: 8) {
+                        ForEach(request.attachments) { att in
+                            let isChecked = selectedIDs.contains(att.id)
+                            Button {
+                                if isChecked {
+                                    selectedIDs.remove(att.id)
+                                } else {
+                                    selectedIDs.insert(att.id)
+                                }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
+                                        .font(.title3)
+                                        .foregroundStyle(isChecked ? retinaGold : .secondary)
+
+                                    if let data = store.readAttachmentData(for: att),
+                                       let crisp = RetinaImageSupport.loadCrispImage(from: data, backingScale: displayScale) {
+                                        Image(decorative: crisp.cgImage, scale: crisp.backingScale, orientation: .up)
+                                            .resizable()
+                                            .interpolation(.high)
+                                            .aspectRatio(contentMode: .fit)
+                                            .frame(width: 72, height: 48)
+                                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 6)
+                                                    .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
+                                            )
+                                    } else {
+                                        Image(systemName: "photo")
+                                            .frame(width: 72, height: 48)
+                                            .foregroundStyle(.secondary)
+                                    }
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(att.filename)
+                                            .font(.body.weight(.medium))
+                                            .lineLimit(1)
+                                        Text("\(att.pixelWidth)×\(att.pixelHeight) px • #\(att.shortID)")
+                                            .font(.caption.monospaced())
+                                            .foregroundStyle(.secondary)
+                                    }
+
+                                    Spacer()
+                                }
+                                .padding(8)
+                                .background(isChecked ? retinaGold.opacity(0.10) : Color.secondary.opacity(0.05))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(isChecked ? retinaGold.opacity(0.55) : Color.clear, lineWidth: 1)
+                                )
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .frame(maxHeight: 280)
+            }
+            .padding(20)
+            .navigationTitle("Copy for Apple Notes — Include Images?")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(selectedIDs.isEmpty ? "Copy Plain Text" : "Copy Text + \(selectedIDs.count) Image(s)") {
+                        store.performCopyForAppleNotes(
+                            text: request.selectedText,
+                            attachments: request.attachments,
+                            includedAttachmentIDs: selectedIDs,
+                            appendUnreferenced: request.appendUnreferenced,
+                            expandTabs: expandTabs
+                        )
+                        dismiss()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .tint(retinaGold)
+                }
+            }
+        }
+        .frame(minWidth: 540, minHeight: 380)
+    }
+}
+#endif
 #endif

@@ -187,6 +187,7 @@ struct UnifiedNoteTextView: NSViewRepresentable {
         textView.isAutomaticTextReplacementEnabled = enabled
     }
     static let imageMarkerRegex = try? NSRegularExpression(pattern: #"▸\[Image:[^\n\]]*\]"#)
+    static let strikethroughRegex = try? NSRegularExpression(pattern: #"~~([^\n~]+?)~~"#)
 
     static func createStandardParagraphStyle() -> NSMutableParagraphStyle {
         let paragraph = NSMutableParagraphStyle()
@@ -232,6 +233,7 @@ struct UnifiedNoteTextView: NSViewRepresentable {
             range: NSRange(location: 0, length: totalLen)
         )
         storage.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: totalLen))
+        storage.removeAttribute(.strikethroughStyle, range: NSRange(location: 0, length: totalLen))
 
         let firstLineRange = fullStr.lineRange(for: NSRange(location: 0, length: 0))
         if firstLineRange.length > 0 {
@@ -247,6 +249,22 @@ struct UnifiedNoteTextView: NSViewRepresentable {
                 ? NSFont.systemFont(ofSize: span.size, weight: .bold)
                 : NSFont.systemFont(ofSize: span.size)
             storage.addAttribute(.font, value: font, range: NSRange(location: loc, length: len))
+        }
+
+        if let strikeRegex = Self.strikethroughRegex {
+            let matches = strikeRegex.matches(in: storage.string, range: NSRange(location: 0, length: totalLen))
+            for match in matches {
+                let innerRange = match.range(at: 1)
+                if innerRange.location != NSNotFound && innerRange.length > 0 {
+                    storage.addAttributes(
+                        [
+                            .strikethroughStyle: NSUnderlineStyle.single.rawValue,
+                            .foregroundColor: NSColor.secondaryLabelColor,
+                        ],
+                        range: innerRange
+                    )
+                }
+            }
         }
 
         for marker in foldedBlocks.keys {
@@ -740,6 +758,7 @@ struct UnifiedNoteTextView: NSViewRepresentable {
             let fmtItems: [(String, Selector)] = [
                 ("Bold (**text**)", #selector(AscensionNSTextView.wrapBold(_:))),
                 ("Italic (*text*)", #selector(AscensionNSTextView.wrapItalic(_:))),
+                ("Cross-Out (~~text~~)", #selector(AscensionNSTextView.wrapStrikethrough(_:))),
                 ("Inline Code (`text`)", #selector(AscensionNSTextView.wrapCode(_:))),
                 ("Heading (## )", #selector(AscensionNSTextView.prefixHeading(_:))),
                 ("Bullet List (• )", #selector(AscensionNSTextView.prefixBullet(_:))),
@@ -932,6 +951,7 @@ struct UnifiedNoteTextView: NSViewRepresentable {
                 range: NSRange(location: 0, length: len)
             )
             storage.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: len))
+            storage.removeAttribute(.strikethroughStyle, range: NSRange(location: 0, length: len))
 
             // Keep existing per-character font sizes, updating only Line 1 bold weight
             if line1.length > 0 {
@@ -939,6 +959,22 @@ struct UnifiedNoteTextView: NSViewRepresentable {
                     let currentSize = (val as? NSFont)?.pointSize ?? CGFloat(store.editorFontSize + 7.0)
                     let targetSize = max(currentSize, CGFloat(store.editorFontSize + 7.0))
                     storage.addAttribute(.font, value: NSFont.systemFont(ofSize: targetSize, weight: .bold), range: subRange)
+                }
+            }
+
+            if let strikeRegex = UnifiedNoteTextView.strikethroughRegex {
+                let matches = strikeRegex.matches(in: storage.string, range: NSRange(location: 0, length: len))
+                for match in matches {
+                    let innerRange = match.range(at: 1)
+                    if innerRange.location != NSNotFound && innerRange.length > 0 {
+                        storage.addAttributes(
+                            [
+                                .strikethroughStyle: NSUnderlineStyle.single.rawValue,
+                                .foregroundColor: NSColor.secondaryLabelColor,
+                            ],
+                            range: innerRange
+                        )
+                    }
                 }
             }
 
@@ -969,7 +1005,7 @@ struct UnifiedNoteTextView: NSViewRepresentable {
                 let rLen = max(0, min(r.length, len - loc))
                 return NSValue(range: NSRange(location: loc, length: rLen))
             }
-            if !clampedSelections.isEmpty {
+            if NSEvent.pressedMouseButtons == 0 && !clampedSelections.isEmpty {
                 tv.selectedRanges = clampedSelections
             }
             var restoredTyping = savedTyping
@@ -1000,11 +1036,7 @@ final class AscensionNoteScrollView: NSScrollView {
     override func mouseDown(with event: NSEvent) {
         if let tv = documentView as? NSTextView {
             window?.makeFirstResponder(tv)
-            let ptInTV = tv.convert(event.locationInWindow, from: nil)
-            let charIndex = tv.characterIndexForInsertion(at: ptInTV)
-            let currentLen = (tv.string as NSString).length
-            let safeIndex = max(0, min(charIndex, currentLen))
-            tv.setSelectedRange(NSRange(location: safeIndex, length: 0))
+            tv.mouseDown(with: event)
             return
         }
         super.mouseDown(with: event)
@@ -1092,15 +1124,36 @@ final class AscensionNSTextView: NSTextView {
         }
     }
 
-    // MARK: - Copy for Apple Notes & Clipboard Preservation
+    // MARK: - Copy for Apple Notes & 1-Step Copy with Images
+    override func copy(_ sender: Any?) {
+        let sel = selectedRange()
+        let ns = string as NSString
+        guard sel.location != NSNotFound, sel.length > 0, sel.location + sel.length <= ns.length else {
+            super.copy(sender)
+            return
+        }
+        let copiedSlice = ns.substring(with: sel)
+        let isSelectAll = sel.length >= max(1, ns.length - 1)
+        if coordinator?.store.requestCopyWithImages(text: copiedSlice, isSelectAll: isSelectAll) == true {
+            return
+        }
+        super.copy(sender)
+    }
+
     @objc func copyForAppleNotes(_ sender: Any?) {
         let sel = selectedRange()
         let ns = string as NSString
         let textToCopy: String
+        let isSelectAll: Bool
         if sel.location != NSNotFound && sel.length > 0 && sel.location + sel.length <= ns.length {
             textToCopy = ns.substring(with: sel)
+            isSelectAll = sel.length >= max(1, ns.length - 1)
         } else {
             textToCopy = string
+            isSelectAll = true
+        }
+        if coordinator?.store.requestCopyWithImages(text: textToCopy, isSelectAll: isSelectAll) == true {
+            return
         }
         // Expand any raw tabs to 3 spaces so Apple Notes never collapses tabs into 🔻🔻🔻🔻
         let cleanText = textToCopy.replacingOccurrences(of: "\t", with: "   ")
@@ -1110,13 +1163,24 @@ final class AscensionNSTextView: NSTextView {
     }
 
     func ensureFullLayoutAndFrame() {
+        isEditable = true
+        isSelectable = true
         guard let tc = textContainer, let lm = layoutManager else { return }
         lm.ensureLayout(for: tc)
         let used = lm.usedRect(for: tc)
-        let minH = max(minSize.height, used.height + 40)
+        let scrollContentSize = enclosingScrollView?.contentSize ?? .zero
+        let minH = max(minSize.height, max(used.height + 40, scrollContentSize.height))
         var fr = frame
+        var changed = false
+        if scrollContentSize.width > 0 && abs(fr.size.width - scrollContentSize.width) > 1 {
+            fr.size.width = scrollContentSize.width
+            changed = true
+        }
         if fr.size.height < minH {
             fr.size.height = minH
+            changed = true
+        }
+        if changed {
             frame = fr
         }
         needsLayout = true
@@ -1390,6 +1454,23 @@ final class AscensionNSTextView: NSTextView {
 
     @objc func wrapBold(_ sender: Any?) { wrapSelection(prefix: "**", suffix: "**") }
     @objc func wrapItalic(_ sender: Any?) { wrapSelection(prefix: "*", suffix: "*") }
+    @objc func wrapStrikethrough(_ sender: Any?) {
+        let range = selectedRange()
+        let ns = string as NSString
+        if range.location != NSNotFound && range.length >= 4 && range.location + range.length <= ns.length {
+            let current = ns.substring(with: range)
+            if current.hasPrefix("~~") && current.hasSuffix("~~") {
+                let unwrapped = String(current.dropFirst(2).dropLast(2))
+                if shouldChangeText(in: range, replacementString: unwrapped) {
+                    replaceCharacters(in: range, with: unwrapped)
+                    didChangeText()
+                    setSelectedRange(NSRange(location: range.location, length: (unwrapped as NSString).length))
+                }
+                return
+            }
+        }
+        wrapSelection(prefix: "~~", suffix: "~~")
+    }
     @objc func wrapCode(_ sender: Any?) { wrapSelection(prefix: "`", suffix: "`") }
     @objc func prefixHeading(_ sender: Any?) { prefixSelectedLines(with: "## ") }
     @objc func prefixBullet(_ sender: Any?) { prefixSelectedLines(with: "• ") }

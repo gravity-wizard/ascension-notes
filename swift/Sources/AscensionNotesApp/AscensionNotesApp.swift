@@ -271,6 +271,13 @@ struct AscensionNotesApp: App {
                 }
                 .keyboardShortcut("0", modifiers: .command)
 
+                Button("Cross-Out (~~text~~)") {
+                    #if os(macOS)
+                    _ = NSApp.sendAction(#selector(AscensionNSTextView.wrapStrikethrough(_:)), to: nil, from: nil)
+                    #endif
+                }
+                .keyboardShortcut("x", modifiers: [.command, .shift])
+
                 Divider()
 
                 Button("Fold Selected Block") {
@@ -368,6 +375,11 @@ struct AscensionNotesRootView: View {
         .sheet(item: $store.activeLightboxRequest) { request in
             RetinaLightboxSheet(store: store, request: request)
         }
+        #if os(macOS)
+        .sheet(item: $store.activeCopyWithImagesRequest) { request in
+            CopyWithImagesSheet(store: store, request: request)
+        }
+        #endif
         #if canImport(UniformTypeIdentifiers)
         .fileImporter(
             isPresented: $showSyncFolderImporter,
@@ -1604,6 +1616,21 @@ struct AscensionNotesRootView: View {
 
         var attributed = AttributedString(sliceText)
         attributed.font = .system(size: store.editorFontSize)
+
+        if let strikeRegex = try? NSRegularExpression(pattern: #"~~([^\n~]+?)~~"#) {
+            let nsSlice = sliceText as NSString
+            let fullNS = NSRange(location: 0, length: nsSlice.length)
+            for match in strikeRegex.matches(in: sliceText, range: fullNS) {
+                let innerNS = match.range(at: 1)
+                if innerNS.location != NSNotFound,
+                   innerNS.length > 0,
+                   let swiftRange = Range(innerNS, in: sliceText),
+                   let attrRange = Range(swiftRange, in: attributed) {
+                    attributed[attrRange].strikethroughStyle = .single
+                    attributed[attrRange].foregroundColor = .secondary
+                }
+            }
+        }
 
         for issue in spellIssues {
             let ovStart = max(issue.charOffset, sliceStartOffset)

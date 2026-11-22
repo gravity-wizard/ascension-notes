@@ -1,6 +1,11 @@
 import AscensionCore
 import Foundation
 import Observation
+#if os(macOS)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
 public enum NoteFolder: String, Codable, CaseIterable, Identifiable, Sendable {
     case chamberNorma = "Chamber • Norma"
@@ -268,6 +273,31 @@ public struct RetinaLightboxRequest: Identifiable, Equatable, Sendable {
     public let attachment: NoteAttachment
 }
 
+public struct CopyWithImagesRequest: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public let noteID: UUID
+    public let selectedText: String
+    public let attachments: [NoteAttachment]
+    public let preselectedAttachmentIDs: Set<UUID>
+    public let appendUnreferenced: Bool
+
+    public init(
+        id: UUID = UUID(),
+        noteID: UUID,
+        selectedText: String,
+        attachments: [NoteAttachment],
+        preselectedAttachmentIDs: Set<UUID>,
+        appendUnreferenced: Bool
+    ) {
+        self.id = id
+        self.noteID = noteID
+        self.selectedText = selectedText
+        self.attachments = attachments
+        self.preselectedAttachmentIDs = preselectedAttachmentIDs
+        self.appendUnreferenced = appendUnreferenced
+    }
+}
+
 public enum TextViewQuickAction: Sendable {
     case replaceRange(location: Int, length: Int, with: String, learnWord: String?)
     case learnOnly(String)
@@ -324,6 +354,7 @@ final class NotesStore {
     var showHelp: Bool = false
     var showA3odex: Bool = false
     var showImportAXIF: Bool = false
+    var activeCopyWithImagesRequest: CopyWithImagesRequest? = nil
     var autoCapitalizeNewLines: Bool = false
     var spellcheckCleanView: Bool = true
     var spellcheckRevision: Int = 0
@@ -780,6 +811,13 @@ final class NotesStore {
 
         return sorted.filter { note in
             if matchesQuery(in: note) {
+                return true
+            }
+            if note.derivedTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               note.displayTitle.range(
+                   of: trimmedQuery,
+                   options: caseSensitive ? [] : [.caseInsensitive]
+               ) != nil {
                 return true
             }
             return note.ownerAcode9.range(
@@ -1584,6 +1622,140 @@ final class NotesStore {
         save()
         return attachment
     }
+
+    func requestCopyWithImages(text: String, isSelectAll: Bool) -> Bool {
+        guard let note = selectedNote, !note.attachments.isEmpty else {
+            return false
+        }
+        let matched = note.attachments.filter { text.contains($0.markerText) }
+        guard !matched.isEmpty || isSelectAll else {
+            return false
+        }
+        let preselected: Set<UUID> = matched.isEmpty
+            ? Set(note.attachments.map(\.id))
+            : Set(matched.map(\.id))
+        activeCopyWithImagesRequest = CopyWithImagesRequest(
+            noteID: note.id,
+            selectedText: text,
+            attachments: note.attachments,
+            preselectedAttachmentIDs: preselected,
+            appendUnreferenced: isSelectAll || matched.isEmpty
+        )
+        return true
+    }
+
+    #if os(macOS)
+    func performCopyForAppleNotes(
+        text: String,
+        attachments: [NoteAttachment],
+        includedAttachmentIDs: Set<UUID>,
+        appendUnreferenced: Bool,
+        expandTabs: Bool = true
+    ) {
+        let workingText = expandTabs ? text.replacingOccurrences(of: "\t", with: "   ") : text
+        let baseFont = NSFont.systemFont(ofSize: CGFloat(editorFontSize))
+        let baseAttrs: [NSAttributedString.Key: Any] = [
+            .font: baseFont,
+            .foregroundColor: NSColor.labelColor,
+        ]
+
+        struct MarkerHit {
+            let range: Range<String.Index>
+            let attachment: NoteAttachment
+        }
+
+        var hits: [MarkerHit] = []
+        for att in attachments {
+            let marker = att.markerText
+            var searchStart = workingText.startIndex
+            while searchStart < workingText.endIndex,
+                  let found = workingText.range(of: marker, range: searchStart..<workingText.endIndex) {
+                hits.append(MarkerHit(range: found, attachment: att))
+                searchStart = found.upperBound
+            }
+        }
+        hits.sort { $0.range.lowerBound < $1.range.lowerBound }
+
+        let attributed = NSMutableAttributedString()
+        var plainParts: [String] = []
+        var referencedIDs: Set<UUID> = []
+        var cursor = workingText.startIndex
+
+        for hit in hits {
+            if hit.range.lowerBound < cursor {
+                continue
+            }
+            if cursor < hit.range.lowerBound {
+                let chunk = String(workingText[cursor..<hit.range.lowerBound])
+                attributed.append(NSAttributedString(string: chunk, attributes: baseAttrs))
+                plainParts.append(chunk)
+            }
+            referencedIDs.insert(hit.attachment.id)
+            if includedAttachmentIDs.contains(hit.attachment.id),
+               let pngData = readAttachmentData(for: hit.attachment) {
+                let wrapper = FileWrapper(regularFileWithContents: pngData)
+                wrapper.preferredFilename = hit.attachment.filename
+                let textAtt = NSTextAttachment(fileWrapper: wrapper)
+                if let crisp = RetinaImageSupport.makeCrispNSImage(from: pngData) {
+                    textAtt.image = crisp
+                    textAtt.bounds = NSRect(origin: .zero, size: crisp.size)
+                }
+                attributed.append(NSAttributedString(attachment: textAtt))
+            }
+            cursor = hit.range.upperBound
+        }
+
+        if cursor < workingText.endIndex {
+            let tail = String(workingText[cursor..<workingText.endIndex])
+            attributed.append(NSAttributedString(string: tail, attributes: baseAttrs))
+            plainParts.append(tail)
+        }
+
+        if appendUnreferenced {
+            for att in attachments where includedAttachmentIDs.contains(att.id) && !referencedIDs.contains(att.id) {
+                if let pngData = readAttachmentData(for: att) {
+                    if attributed.length > 0 && !attributed.string.hasSuffix("\n") {
+                        attributed.append(NSAttributedString(string: "\n", attributes: baseAttrs))
+                    }
+                    let wrapper = FileWrapper(regularFileWithContents: pngData)
+                    wrapper.preferredFilename = att.filename
+                    let textAtt = NSTextAttachment(fileWrapper: wrapper)
+                    if let crisp = RetinaImageSupport.makeCrispNSImage(from: pngData) {
+                        textAtt.image = crisp
+                        textAtt.bounds = NSRect(origin: .zero, size: crisp.size)
+                    }
+                    attributed.append(NSAttributedString(attachment: textAtt))
+                }
+            }
+        }
+
+        let plainFallback = plainParts.joined()
+            .replacingOccurrences(of: "\n\n\n", with: "\n\n")
+            .trimmingCharacters(in: .newlines)
+
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        if !includedAttachmentIDs.isEmpty,
+           attributed.length > 0,
+           let rtfdData = try? attributed.data(
+               from: NSRange(location: 0, length: attributed.length),
+               documentAttributes: [.documentType: NSAttributedString.DocumentType.rtfd]
+           ) {
+            let item = NSPasteboardItem()
+            item.setData(rtfdData, forType: .rtfd)
+            if let rtfData = try? attributed.data(
+                from: NSRange(location: 0, length: attributed.length),
+                documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+            ) {
+                item.setData(rtfData, forType: .rtf)
+            }
+            item.setString(plainFallback.isEmpty ? workingText : plainFallback, forType: .string)
+            pb.writeObjects([item])
+        } else {
+            pb.writeObjects([(plainFallback.isEmpty ? workingText : plainFallback) as NSString])
+        }
+    }
+    #endif
 
     func deleteAttachment(_ attachment: NoteAttachment, from noteID: UUID) {
         guard let idx = notes.firstIndex(where: { $0.id == noteID }) else { return }
