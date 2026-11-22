@@ -23,6 +23,12 @@ import {
 } from "./http.mjs";
 import { deliverAccessPasswordEmail } from "./mailer.mjs";
 import { createSignedNdaReceipt, loadNdaTemplate } from "./nda.mjs";
+import {
+  buildHostedImageSnippets,
+  buildImageRecord,
+  getDailyQuotaForTier,
+  getMaxImageBytes,
+} from "./images.mjs";
 import { defaultStore } from "./store.mjs";
 
 function isValidEmail(email) {
@@ -41,6 +47,12 @@ function isAdminAuthorized(req) {
   return crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(configured));
 }
 
+function requestOrigin(req) {
+  const proto = isHttpsRequest(req) ? "https" : "http";
+  const host = req.headers["x-forwarded-host"] || req.headers.host || "twisted23.com";
+  return `${proto}://${host}`;
+}
+
 export async function handleHealth(req, res) {
   const nowSec = Math.floor(Date.now() / 1000);
   const tag = cleanExactClockExpression({
@@ -54,16 +66,28 @@ export async function handleHealth(req, res) {
     service: "Photo Naming Demo",
     clockBase38: tag,
     unixSeconds: nowSec,
+    maxImageBytes: getMaxImageBytes(),
     devOutbox: devOutboxEnabled(req),
   });
 }
 
 export async function handleSession(req, res, store = defaultStore) {
   const user = await resolveAuthenticatedUser(req, store);
+  const state = await store.readState();
+  const today = new Date().toISOString().slice(0, 10);
+  const quota = user ? getDailyQuotaForTier(user.tier) : 0;
+  const used = user ? (state.dailyUploadsByUserDay[`${user.id}:${today}`] || 0) : 0;
+
   sendJson(res, 200, {
     ok: true,
     user: sanitizePublicUser(user),
     devOutboxAvailable: devOutboxEnabled(req),
+    hosting: {
+      maxImageBytes: getMaxImageBytes(),
+      dailyQuota: quota,
+      dailyUsed: used,
+      dailyRemaining: Math.max(0, quota - used),
+    },
   });
 }
 
@@ -481,4 +505,138 @@ export async function handleAdminRevoke(req, res, store = defaultStore) {
     return sendJson(res, 404, { ok: false, error: "User not found." });
   }
   return sendJson(res, 200, { ok: true, email, revokedAt: updated.revokedAt });
+}
+
+export async function handleImageUpload(req, res, store = defaultStore) {
+  if (req.method !== "POST") {
+    return sendJson(res, 405, { ok: false, error: "Method not allowed" });
+  }
+  const user = await resolveAuthenticatedUser(req, store);
+  if (!user || user.tier < 1 || !user.emailVerified) {
+    return sendJson(res, 401, {
+      ok: false,
+      error: "Level 1 verification required to host images (use 0 KB Local Rename mode as Guest).",
+    });
+  }
+
+  const maxBytes = getMaxImageBytes();
+  // Base64 overhead is ~1.37x raw bytes + JSON metadata overhead
+  const body = await readJsonBody(req, Math.ceil(maxBytes * 1.45) + 64 * 1024);
+  const rawDataUrlOrB64 = String(body.dataBase64 || body.dataUrl || "").trim();
+  if (!rawDataUrlOrB64) {
+    return sendJson(res, 400, { ok: false, error: "Missing image payload." });
+  }
+
+  const b64Part = rawDataUrlOrB64.includes(",")
+    ? rawDataUrlOrB64.split(",", 2)[1]
+    : rawDataUrlOrB64;
+  const buffer = Buffer.from(b64Part, "base64");
+
+  const today = new Date().toISOString().slice(0, 10);
+  const quota = getDailyQuotaForTier(user.tier);
+  const dayKey = `${user.id}:${today}`;
+
+  const preState = await store.readState();
+  const currentUsed = preState.dailyUploadsByUserDay[dayKey] || 0;
+  if (currentUsed >= quota) {
+    return sendJson(res, 429, {
+      ok: false,
+      error: `Daily upload quota reached (${currentUsed}/${quota} today). Use 0 KB Local Rename Only or upgrade to Level 2 for ${getDailyQuotaForTier(2)}/day.`,
+    });
+  }
+
+  const record = buildImageRecord({
+    buffer,
+    subject: body.subject || "",
+    unixSeconds: Number(body.unixSeconds) || Math.floor(Date.now() / 1000),
+    favoriteOffset: body.favoriteOffset || user.favoriteOffset || null,
+    uploader: user,
+    origin: requestOrigin(req),
+  });
+
+  await store.saveImageBlob(record.storedFilename, buffer);
+
+  const quotaAfter = await store.updateState((state) => {
+    state.imagesBySlug[record.slug] = record;
+    state.dailyUploadsByUserDay[dayKey] = (state.dailyUploadsByUserDay[dayKey] || 0) + 1;
+    const used = state.dailyUploadsByUserDay[dayKey];
+    return {
+      dailyQuota: quota,
+      dailyUsed: used,
+      dailyRemaining: Math.max(0, quota - used),
+    };
+  });
+
+  return sendJson(res, 200, {
+    ok: true,
+    image: record,
+    hosting: {
+      maxImageBytes: maxBytes,
+      ...quotaAfter,
+    },
+  });
+}
+
+export async function handleGetImageMeta(req, res, slugInput, store = defaultStore) {
+  const cleanSlug = String(slugInput || "").trim().replace(/[^0-9a-z-]/g, "");
+  if (!cleanSlug) {
+    return sendJson(res, 400, { ok: false, error: "Invalid image slug." });
+  }
+  const state = await store.readState();
+  const record = state.imagesBySlug[cleanSlug];
+  if (!record) {
+    return sendJson(res, 404, { ok: false, error: "Hosted image not found." });
+  }
+  const snippets = buildHostedImageSnippets({
+    origin: requestOrigin(req),
+    storedFilename: record.storedFilename,
+    slug: record.slug,
+    subject: record.subject,
+    base38Tag: record.base38Tag,
+    bytes: record.bytes,
+    shortId: record.shortId,
+  });
+  return sendJson(res, 200, {
+    ok: true,
+    image: {
+      ...record,
+      snippets,
+    },
+  });
+}
+
+export async function handleServeImage(req, res, filenameInput, store = defaultStore) {
+  const safeName = String(filenameInput || "").trim().replace(/^\/+/, "");
+  if (!/^[0-9a-z-]+\.(webp|jpg|png)$/.test(safeName)) {
+    res.statusCode = 400;
+    return res.end("Invalid image filename");
+  }
+  const slug = safeName.replace(/\.(webp|jpg|png)$/, "");
+  const state = await store.readState();
+  const record = state.imagesBySlug[slug];
+  if (!record || record.storedFilename !== safeName) {
+    res.statusCode = 404;
+    return res.end("Not found");
+  }
+
+  if (req.headers["if-none-match"] && req.headers["if-none-match"] === record.etag) {
+    res.statusCode = 304;
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    res.setHeader("ETag", record.etag);
+    return res.end();
+  }
+
+  const blob = await store.readImageBlob(safeName);
+  if (!blob) {
+    res.statusCode = 404;
+    return res.end("Blob not found");
+  }
+
+  res.statusCode = 200;
+  res.setHeader("Content-Type", record.mime);
+  res.setHeader("Content-Length", String(blob.length));
+  res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+  res.setHeader("ETag", record.etag);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.end(blob);
 }

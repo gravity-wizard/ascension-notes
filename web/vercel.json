@@ -11,6 +11,7 @@
     }
   ],
   "rewrites": [
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
+    { "source": "/i/:name", "destination": "/api/images/serve?name=:name" },
+    { "source": "/((?!api/|i/).*)", "destination": "/index.html" }
   ]
 }

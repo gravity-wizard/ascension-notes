@@ -12,6 +12,8 @@ function emptyState() {
     credentialByIndex: {},
     ndaReceipts: [],
     devOutbox: [],
+    imagesBySlug: {},
+    dailyUploadsByUserDay: {},
   };
 }
 
@@ -25,28 +27,28 @@ function getKvConfig() {
 }
 
 const KV_KEY = process.env.TWISTED23_KV_KEY || "twisted23:photo_demo:state:v1";
+const KV_BLOB_PREFIX = process.env.TWISTED23_KV_BLOB_PREFIX || "twisted23:photo_demo:blob:v1:";
 
-async function kvGet(cfg) {
-  const res = await fetch(`${cfg.url}/get/${encodeURIComponent(KV_KEY)}`, {
+async function kvGet(cfg, key = KV_KEY) {
+  const res = await fetch(`${cfg.url}/get/${encodeURIComponent(key)}`, {
     headers: { Authorization: `Bearer ${cfg.token}` },
   });
   if (!res.ok) {
     throw new Error(`KV get failed: ${res.status}`);
   }
   const data = await res.json();
-  if (!data || data.result == null) return emptyState();
-  const parsed = typeof data.result === "string" ? JSON.parse(data.result) : data.result;
-  return { ...emptyState(), ...parsed };
+  if (!data || data.result == null) return null;
+  return typeof data.result === "string" ? JSON.parse(data.result) : data.result;
 }
 
-async function kvSet(cfg, state) {
-  const res = await fetch(`${cfg.url}/set/${encodeURIComponent(KV_KEY)}`, {
+async function kvSet(cfg, value, key = KV_KEY) {
+  const res = await fetch(`${cfg.url}/set/${encodeURIComponent(key)}`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${cfg.token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(state),
+    body: JSON.stringify(value),
   });
   if (!res.ok) {
     throw new Error(`KV set failed: ${res.status}`);
@@ -79,12 +81,19 @@ async function fileSet(filePath, state) {
 
 let memoryQueue = Promise.resolve();
 
-export function createStore({ filePath = null } = {}) {
+export function createStore({ filePath = null, uploadsDir = null } = {}) {
   const targetFile = resolveFilePath(filePath);
+  const targetUploadsDir =
+    uploadsDir ||
+    process.env.TWISTED23_UPLOADS_DIR ||
+    path.resolve(path.dirname(targetFile), "uploads");
 
   async function readState() {
     const kv = getKvConfig();
-    if (kv) return kvGet(kv);
+    if (kv) {
+      const parsed = await kvGet(kv, KV_KEY);
+      return parsed ? { ...emptyState(), ...parsed } : emptyState();
+    }
     return fileGet(targetFile);
   }
 
@@ -93,7 +102,7 @@ export function createStore({ filePath = null } = {}) {
       const state = await readState();
       const result = await mutator(state);
       const kv = getKvConfig();
-      if (kv) await kvSet(kv, state);
+      if (kv) await kvSet(kv, state, KV_KEY);
       else await fileSet(targetFile, state);
       return result;
     };
@@ -102,7 +111,33 @@ export function createStore({ filePath = null } = {}) {
     return next;
   }
 
-  return { readState, updateState };
+  async function saveImageBlob(safeFilename, buffer) {
+    const cleanName = path.basename(safeFilename);
+    const kv = getKvConfig();
+    if (kv) {
+      await kvSet(kv, { base64: buffer.toString("base64") }, `${KV_BLOB_PREFIX}${cleanName}`);
+      return;
+    }
+    await fs.mkdir(targetUploadsDir, { recursive: true });
+    await fs.writeFile(path.join(targetUploadsDir, cleanName), buffer);
+  }
+
+  async function readImageBlob(safeFilename) {
+    const cleanName = path.basename(safeFilename);
+    const kv = getKvConfig();
+    if (kv) {
+      const rec = await kvGet(kv, `${KV_BLOB_PREFIX}${cleanName}`);
+      return rec?.base64 ? Buffer.from(rec.base64, "base64") : null;
+    }
+    try {
+      return await fs.readFile(path.join(targetUploadsDir, cleanName));
+    } catch (err) {
+      if (err && err.code === "ENOENT") return null;
+      throw err;
+    }
+  }
+
+  return { readState, updateState, saveImageBlob, readImageBlob };
 }
 
 export const defaultStore = createStore();

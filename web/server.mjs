@@ -6,12 +6,15 @@ import {
   handleAdminAudit,
   handleAdminRevoke,
   handleDevOutbox,
+  handleGetImageMeta,
   handleGetNda,
   handleHealth,
+  handleImageUpload,
   handleLogin,
   handleLogout,
   handlePreferences,
   handleRegister,
+  handleServeImage,
   handleSession,
   handleSignNda,
 } from "./lib/handlers.mjs";
@@ -29,6 +32,7 @@ const MIME_TYPES = {
   ".json": "application/json; charset=utf-8",
   ".png": "image/png",
   ".jpg": "image/jpeg",
+  ".webp": "image/webp",
   ".svg": "image/svg+xml",
 };
 
@@ -46,6 +50,15 @@ export function createAppServer({ store = defaultStore } = {}) {
       if (pathname === "/api/preferences") return await handlePreferences(req, res, store);
       if (pathname === "/api/nda") return await handleGetNda(req, res, store);
       if (pathname === "/api/nda/sign") return await handleSignNda(req, res, store);
+      if (pathname === "/api/images/upload") return await handleImageUpload(req, res, store);
+      if (pathname.startsWith("/api/images/")) {
+        const slug = pathname.slice("/api/images/".length);
+        return await handleGetImageMeta(req, res, slug, store);
+      }
+      if (pathname.startsWith("/i/")) {
+        const name = pathname.slice("/i/".length);
+        return await handleServeImage(req, res, name, store);
+      }
       if (pathname === "/api/dev-outbox") return await handleDevOutbox(req, res, store);
       if (pathname === "/api/admin/audit") return await handleAdminAudit(req, res, store);
       if (pathname === "/api/admin/revoke") return await handleAdminRevoke(req, res, store);

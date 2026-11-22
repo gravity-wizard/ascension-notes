@@ -5,6 +5,7 @@ import {
   sanitizeFavorite3LetterOffset,
 } from "/lib/base38.mjs";
 import { inspectImageFile } from "/exif.js";
+import { compressDataUrlToBudget } from "/compressor.js";
 
 function renderSampleCanvasDataUrl(title, accentA, accentB, glyph) {
   const canvas = document.createElement("canvas");
@@ -75,6 +76,8 @@ const SAMPLES = [
 ];
 
 let currentUser = { authenticated: false, tier: 0, favoriteOffset: "" };
+let hostingLimits = { maxImageBytes: 570 * 1024, dailyQuota: 0, dailyUsed: 0, dailyRemaining: 0 };
+let selectedCapKb = 570;
 let devOutboxAvailable = false;
 let selectedPhoto = null;
 let batchItems = [];
@@ -109,6 +112,15 @@ function closeModal(id) {
   document.getElementById(id).classList.remove("open");
 }
 
+function shortPseudoId(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(16).padStart(4, "0").slice(0, 4);
+}
+
 function computePhotoNaming(photo) {
   const subject = (document.getElementById("subject-input").value || "").trim();
   const offsetRaw = (document.getElementById("offset-input").value || "").trim();
@@ -122,7 +134,23 @@ function computePhotoNaming(photo) {
     favoriteOffset: fav,
   });
   const filename = subject ? `${subject} ${res.expression}.png` : `${res.expression}.png`;
-  return { ...res, filename };
+  const axifLocal = `▸[Image: ${filename} #${shortPseudoId(photo.id || filename)}]`;
+  return { ...res, filename, axifLocal };
+}
+
+function renderHostedSnippets(snippets) {
+  const box = document.getElementById("imgbb-results");
+  if (!snippets) {
+    box.classList.add("hidden");
+    return;
+  }
+  box.classList.remove("hidden");
+  document.getElementById("snip-direct").value = snippets.directUrl;
+  document.getElementById("snip-md").value = snippets.markdown;
+  document.getElementById("snip-md-linked").value = snippets.markdownLinked;
+  document.getElementById("snip-html").value = snippets.htmlLinked;
+  document.getElementById("snip-bbcode").value = snippets.bbcodeLinked;
+  document.getElementById("snip-axif").value = snippets.axifMarker;
 }
 
 function renderSelectedPhoto() {
@@ -133,6 +161,7 @@ function renderSelectedPhoto() {
   document.getElementById("output-tag").textContent = named.expression;
   document.getElementById("output-msd").textContent = named.preservedMSDPrefix || "—";
   document.getElementById("output-source").textContent = selectedPhoto.timestampSource;
+  document.getElementById("output-axif-local").textContent = named.axifLocal;
   const exactOk = decodeClockExpression(named.expression) === selectedPhoto.unixSeconds;
   document.getElementById("output-exact").textContent = exactOk ? "✓ exact ±0s" : "approx";
 
@@ -140,6 +169,7 @@ function renderSelectedPhoto() {
   document.querySelectorAll("#offset-chips .chip-btn[data-offset]").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.offset === activeOffset);
   });
+  renderHostedSnippets(selectedPhoto.hostedSnippets || null);
 }
 
 function renderSampleList() {
@@ -155,8 +185,8 @@ function renderSampleList() {
     btn.innerHTML = `
       <img class="sample-thumb" src="${s.dataUrl}" alt="" />
       <div>
-        <div style="font-size: 13px; font-weight: 600;">${s.subject || s.originalName}</div>
-        <div style="font-size: 11px; color: var(--muted); font-family: var(--mono);">${s.timestampSource}</div>
+        <div style="font-size: 13px; font-weight: 600;">${escapeHtml(s.subject || s.originalName)}</div>
+        <div style="font-size: 11px; color: var(--muted); font-family: var(--mono);">${escapeHtml(s.timestampSource)}</div>
       </div>
     `;
     btn.addEventListener("click", () => selectPhoto(s));
@@ -234,7 +264,16 @@ function syncAuthUi() {
   document.getElementById("btn-logout").classList.toggle("hidden", tier === 0);
   document.getElementById("btn-open-outbox").classList.toggle("hidden", !devOutboxAvailable);
 
-  // Upload dropzone gating
+  const quotaBadge = document.getElementById("host-quota-badge");
+  const serverMaxKb = Math.round((hostingLimits.maxImageBytes || 570 * 1024) / 1024);
+  if (tier >= 1) {
+    quotaBadge.textContent = `Today: ${hostingLimits.dailyRemaining}/${hostingLimits.dailyQuota} left · Server cap ${serverMaxKb} KB`;
+    document.getElementById("btn-host-image").disabled = hostingLimits.dailyRemaining <= 0;
+  } else {
+    quotaBadge.textContent = `L1: 10/day · L2: 50/day · Server cap ${serverMaxKb} KB`;
+    document.getElementById("btn-host-image").disabled = false;
+  }
+
   const dz = document.getElementById("upload-dropzone");
   const fileInput = document.getElementById("file-input");
   const uploadLock = document.getElementById("upload-lock-msg");
@@ -263,7 +302,6 @@ function syncAuthUi() {
     document.getElementById("offset-tier-hint").textContent = "(Register for Level 1 to save default)";
   }
 
-  // Level 2 Workspace gating
   document.getElementById("l2-locked-cta").classList.toggle("hidden", tier >= 2);
   document.getElementById("btn-l2-export-axif").classList.toggle("hidden", tier < 2);
   document.getElementById("btn-download-nda-receipt").classList.toggle("hidden", tier < 2);
@@ -282,10 +320,34 @@ async function refreshSession() {
   const data = await api("/api/session");
   currentUser = data.user;
   devOutboxAvailable = Boolean(data.devOutboxAvailable);
+  if (data.hosting) hostingLimits = data.hosting;
   if (currentUser.favoriteOffset) {
     document.getElementById("offset-input").value = currentUser.favoriteOffset;
   }
   syncAuthUi();
+}
+
+async function loadViewerImageIfQueryParam() {
+  const slug = new URLSearchParams(window.location.search).get("img");
+  if (!slug) return;
+  try {
+    const data = await api(`/api/images/${encodeURIComponent(slug)}`);
+    const img = data.image;
+    const viewed = {
+      id: img.slug,
+      originalName: img.storedFilename,
+      subject: img.subject || "",
+      unixSeconds: img.unixSeconds,
+      timestampSource: `Hosted Image (${(img.bytes / 1024).toFixed(1)} KB)`,
+      dataUrl: img.snippets.directUrl,
+      hostedSnippets: img.snippets,
+    };
+    selectPhoto(viewed);
+    document.getElementById("compress-status").textContent =
+      `Viewing hosted image ${img.storedFilename} (${(img.bytes / 1024).toFixed(1)} KB, immutable cache).`;
+  } catch (err) {
+    showToast(err.message);
+  }
 }
 
 async function handleFilesUploaded(fileList) {
@@ -321,6 +383,7 @@ async function handleFilesUploaded(fileList) {
     processed.push({
       id: `up_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       originalName: f.name,
+      originalBytes: f.size,
       subject: isBoilerplate ? "" : stem.slice(0, 32),
       unixSeconds: meta.unixSeconds,
       timestampSource: meta.timestampSource,
@@ -438,6 +501,61 @@ document.querySelectorAll("#offset-chips .chip-btn[data-offset]").forEach((btn) 
   });
 });
 
+document.querySelectorAll("#cap-chips .chip-btn[data-cap]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    selectedCapKb = Number(btn.dataset.cap) || 570;
+    document.querySelectorAll("#cap-chips .chip-btn[data-cap]").forEach((b) => {
+      b.classList.toggle("active", b === btn);
+    });
+  });
+});
+
+document.getElementById("btn-host-image").addEventListener("click", async () => {
+  if (!selectedPhoto) return;
+  if (currentUser.tier < 1) {
+    showToast("Register & sign in at Level 1 to host images (or use 0 KB Local Rename above).");
+    openModal("modal-register");
+    return;
+  }
+  const statusEl = document.getElementById("compress-status");
+  const serverMax = hostingLimits.maxImageBytes || 570 * 1024;
+  const targetMax = Math.min(selectedCapKb * 1024, serverMax);
+  try {
+    statusEl.textContent = `Compressing <= ${Math.round(targetMax / 1024)} KB in browser...`;
+    const compressed = await compressDataUrlToBudget(selectedPhoto.dataUrl, { maxBytes: targetMax });
+    const kb = (compressed.bytes / 1024).toFixed(1);
+    statusEl.textContent = `Uploading ${kb} KB (${compressed.width}x${compressed.height} ${compressed.mime.replace("image/", "").toUpperCase()})...`;
+
+    const res = await api("/api/images/upload", {
+      method: "POST",
+      body: JSON.stringify({
+        dataBase64: compressed.dataBase64,
+        subject: document.getElementById("subject-input").value || selectedPhoto.subject || "",
+        unixSeconds: selectedPhoto.unixSeconds,
+        favoriteOffset: sanitizeFavorite3LetterOffset(document.getElementById("offset-input").value) || null,
+      }),
+    });
+
+    if (res.hosting) hostingLimits = res.hosting;
+    selectedPhoto.hostedSnippets = res.image.snippets;
+    statusEl.textContent = `Hosted! ${kb} KB saved as ${res.image.storedFilename} · Cached immutable 1yr.`;
+    syncAuthUi();
+    showToast(`Hosted ${res.image.storedFilename} (${kb} KB)!`);
+  } catch (err) {
+    statusEl.textContent = err.message;
+    showToast(err.message);
+  }
+});
+
+document.querySelectorAll(".copy-snip").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    const val = document.getElementById(btn.dataset.target)?.value || "";
+    if (!val) return;
+    await navigator.clipboard?.writeText(val).catch(() => {});
+    showToast("Copied link tag!");
+  });
+});
+
 document.getElementById("btn-save-offset").addEventListener("click", async () => {
   try {
     const raw = document.getElementById("offset-input").value;
@@ -464,6 +582,12 @@ document.getElementById("btn-copy-filename").addEventListener("click", async () 
   showToast(`Copied: ${txt}`);
 });
 
+document.getElementById("btn-copy-axif-local").addEventListener("click", async () => {
+  const txt = document.getElementById("output-axif-local").textContent;
+  await navigator.clipboard?.writeText(txt).catch(() => {});
+  showToast(`Copied AXIF tag: ${txt}`);
+});
+
 document.getElementById("btn-download-renamed").addEventListener("click", () => {
   if (!selectedPhoto) return;
   const named = computePhotoNaming(selectedPhoto);
@@ -482,9 +606,7 @@ dz.addEventListener("click", () => {
   }
   fileInput.click();
 });
-dz.addEventListener("dragover", (e) => {
-  e.preventDefault();
-});
+dz.addEventListener("dragover", (e) => e.preventDefault());
 dz.addEventListener("drop", (e) => {
   e.preventDefault();
   handleFilesUploaded(e.dataTransfer.files);
@@ -524,11 +646,8 @@ document.getElementById("form-login").addEventListener("submit", async (e) => {
       body: JSON.stringify({ password, email }),
     });
     currentUser = res.user;
-    if (currentUser.favoriteOffset) {
-      document.getElementById("offset-input").value = currentUser.favoriteOffset;
-    }
     closeModal("modal-login");
-    syncAuthUi();
+    await refreshSession();
     showToast(`Signed in at ${currentUser.tierLabel}!`);
   } catch (err) {
     showToast(err.message);
@@ -549,7 +668,7 @@ document.getElementById("form-nda").addEventListener("submit", async (e) => {
     });
     currentUser = res.user;
     closeModal("modal-nda");
-    syncAuthUi();
+    await refreshSession();
     showToast(`NDA signed! Level 2 Base-38 Password: ${res.level2Password}`);
   } catch (err) {
     showToast(err.message);
@@ -580,7 +699,8 @@ document.getElementById("btn-l2-export-axif").addEventListener("click", () => {
   ];
   for (const item of items) {
     const named = computePhotoNaming(item);
-    lines.push(`- ![${named.filename}](${named.filename}) — \`${named.expression}\` (${item.timestampSource})`);
+    const snippet = item.hostedSnippets?.markdownLinked || `![${named.filename}](${named.filename})`;
+    lines.push(`- ${snippet} — \`${named.expression}\` (${item.timestampSource})`);
   }
   const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
   const a = document.createElement("a");
@@ -594,4 +714,6 @@ renderSampleList();
 selectPhoto(SAMPLES[0]);
 tickLiveClock();
 setInterval(tickLiveClock, 1000);
-refreshSession().catch((err) => console.error(err));
+refreshSession()
+  .then(() => loadViewerImageIfQueryParam())
+  .catch((err) => console.error(err));

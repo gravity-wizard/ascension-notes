@@ -106,7 +106,7 @@
             </div>
 
             <div class="output-box">
-              <div style="font-size: 11px; color: var(--muted);">Clean Lowercase Tag &amp; Output Filename</div>
+              <div style="font-size: 11px; color: var(--muted);">Clean Lowercase Tag &amp; Output Filename (0 KB Bandwidth)</div>
               <div class="output-filename" id="output-filename">...</div>
               <div class="meta-row">
                 <span>Tag: <strong id="output-tag">...</strong></span>
@@ -114,11 +114,78 @@
                 <span>Source: <strong id="output-source">Sample</strong></span>
                 <span style="color: var(--teal);" id="output-exact">✓ exact ±0s</span>
               </div>
+              <div class="meta-row" style="margin-top: 8px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.08);">
+                <span>AXIF: <code id="output-axif-local" style="color: var(--text);">...</code></span>
+              </div>
             </div>
 
-            <div class="chip-row" style="margin-top: 12px;">
-              <button class="primary" id="btn-download-renamed">Download Renamed PNG</button>
+            <div class="chip-row" style="margin-top: 10px;">
+              <button class="primary" id="btn-download-renamed">0 KB Local PNG</button>
               <button id="btn-copy-filename">Copy Filename</button>
+              <button id="btn-copy-axif-local">Copy AXIF Tag</button>
+            </div>
+
+            <!-- ImgBB-Style Bandwith-Capped Hosting Controls -->
+            <div style="margin-top: 14px; padding: 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg);">
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
+                <strong style="font-size: 12px;">Host on Twisted23 (ImgBB Linked Tags)</strong>
+                <span id="host-quota-badge" style="font-size: 11px; font-family: var(--mono); color: var(--muted);">L1+: 10/day · L2: 50/day</span>
+              </div>
+              <div class="chip-row" id="cap-chips" style="margin-top: 8px;">
+                <span style="font-size: 11px; color: var(--muted); align-self: center;">Cap:</span>
+                <button type="button" class="chip-btn active" data-cap="570">570 KB</button>
+                <button type="button" class="chip-btn" data-cap="385">385 KB</button>
+                <button type="button" class="chip-btn" data-cap="57">57 KB</button>
+                <button type="button" class="primary sm" id="btn-host-image" style="margin-left: auto;">Compress &amp; Host</button>
+              </div>
+              <div id="compress-status" style="font-size: 11px; color: var(--muted); margin-top: 6px;">
+                Client auto-compresses to WebP/JPEG &le; chosen budget before upload.
+              </div>
+
+              <div id="imgbb-results" class="hidden" style="margin-top: 10px; display: grid; gap: 6px;">
+                <div class="field" style="margin-bottom: 4px;">
+                  <label>Direct Image URL (Immutable Cache)</label>
+                  <div style="display: flex; gap: 6px;">
+                    <input type="text" readonly id="snip-direct" style="font-family: var(--mono); font-size: 11px;" />
+                    <button type="button" class="sm copy-snip" data-target="snip-direct">Copy</button>
+                  </div>
+                </div>
+                <div class="field" style="margin-bottom: 4px;">
+                  <label>Markdown Image</label>
+                  <div style="display: flex; gap: 6px;">
+                    <input type="text" readonly id="snip-md" style="font-family: var(--mono); font-size: 11px;" />
+                    <button type="button" class="sm copy-snip" data-target="snip-md">Copy</button>
+                  </div>
+                </div>
+                <div class="field" style="margin-bottom: 4px;">
+                  <label>Markdown Linked Badge</label>
+                  <div style="display: flex; gap: 6px;">
+                    <input type="text" readonly id="snip-md-linked" style="font-family: var(--mono); font-size: 11px;" />
+                    <button type="button" class="sm copy-snip" data-target="snip-md-linked">Copy</button>
+                  </div>
+                </div>
+                <div class="field" style="margin-bottom: 4px;">
+                  <label>HTML Linked &lt;img&gt;</label>
+                  <div style="display: flex; gap: 6px;">
+                    <input type="text" readonly id="snip-html" style="font-family: var(--mono); font-size: 11px;" />
+                    <button type="button" class="sm copy-snip" data-target="snip-html">Copy</button>
+                  </div>
+                </div>
+                <div class="field" style="margin-bottom: 4px;">
+                  <label>BBCode Linked [url][img]</label>
+                  <div style="display: flex; gap: 6px;">
+                    <input type="text" readonly id="snip-bbcode" style="font-family: var(--mono); font-size: 11px;" />
+                    <button type="button" class="sm copy-snip" data-target="snip-bbcode">Copy</button>
+                  </div>
+                </div>
+                <div class="field" style="margin-bottom: 0;">
+                  <label>Ascension AXIF Marker</label>
+                  <div style="display: flex; gap: 6px;">
+                    <input type="text" readonly id="snip-axif" style="font-family: var(--mono); font-size: 11px;" />
+                    <button type="button" class="sm copy-snip" data-target="snip-axif">Copy</button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
