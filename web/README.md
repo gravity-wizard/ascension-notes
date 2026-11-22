@@ -17,11 +17,11 @@ npm test
 npm start
 ```
 
-## Hostinger PHP Bundle
+## Hostinger PHP Bundle (`FrmAnTsiTeam`)
 
 ```bash
 cd web
 bash hostinger-php/build_package.sh
 ```
 
-Upload the contents of `web/dist/hostinger-public_html/` into Hostinger's `public_html/` (or a subfolder like `public_html/photo/`).
+Upload the contents of `web/dist/FrmAnTsiTeam/` (or extract `web/dist/FrmAnTsiTeam.zip`) into Hostinger's `public_html/FrmAnTsiTeam/` folder so `https://twisted23.com/FrmAnTsiTeam/` runs cleanly alongside your main site.

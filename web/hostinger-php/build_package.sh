@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WEB_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-OUT_DIR="$WEB_DIR/dist/hostinger-public_html"
+OUT_DIR="$WEB_DIR/dist/FrmAnTsiTeam"
 
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR/lib" "$OUT_DIR/data/uploads"
@@ -16,4 +16,9 @@ cp "$SCRIPT_DIR/.htaccess" "$OUT_DIR/.htaccess"
 cp "$SCRIPT_DIR/lib/bootstrap.php" "$OUT_DIR/lib/bootstrap.php"
 chmod 755 "$OUT_DIR/data" "$OUT_DIR/data/uploads"
 
-echo "Built Hostinger bundle at: $OUT_DIR"
+if command -v zip >/dev/null 2>&1; then
+  rm -f "$WEB_DIR/dist/FrmAnTsiTeam.zip"
+  (cd "$OUT_DIR" && zip -qr "../FrmAnTsiTeam.zip" .)
+fi
+
+echo "Built Hostinger FrmAnTsiTeam bundle at: $OUT_DIR"

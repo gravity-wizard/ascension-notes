@@ -28,17 +28,17 @@ jobs:
       - name: Run Twisted23 web integration & cache tests
         run: cd web && npm test
 
-      - name: Lint Hostinger PHP files & build bundle
+      - name: Lint Hostinger PHP files & build FrmAnTsiTeam bundle
         run: |
           cd web
           for f in hostinger-php/*.php hostinger-php/lib/*.php; do php -l "$f"; done
           bash hostinger-php/build_package.sh
 
-      - name: Upload Hostinger public_html bundle artifact
+      - name: Upload FrmAnTsiTeam bundle artifact
         uses: actions/upload-artifact@v4
         with:
-          name: twisted23-hostinger-public_html
-          path: web/dist/hostinger-public_html
+          name: FrmAnTsiTeam
+          path: web/dist/FrmAnTsiTeam
 
       - name: Check optional Hostinger & Cloudflare deploy secrets
         id: cfg
@@ -55,8 +55,13 @@ jobs:
           else
             echo "has_ftp=false" >> "$GITHUB_OUTPUT"
           fi
-          target_dir="${FTP_DIR:-./}"
-          [[ "$target_dir" != */ ]] && target_dir="${target_dir}/"
+          base_dir="${FTP_DIR:-./}"
+          [[ "$base_dir" != */ ]] && base_dir="${base_dir}/"
+          if [[ "$base_dir" == */FrmAnTsiTeam/ ]]; then
+            target_dir="$base_dir"
+          else
+            target_dir="${base_dir}FrmAnTsiTeam/"
+          fi
           echo "ftp_dir=$target_dir" >> "$GITHUB_OUTPUT"
           if [[ -n "$CF_ZONE" && -n "$CF_TOKEN" ]]; then
             echo "has_cf=true" >> "$GITHUB_OUTPUT"
@@ -64,7 +69,7 @@ jobs:
             echo "has_cf=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Deploy to Hostinger via FTPS
+      - name: Deploy to Hostinger FrmAnTsiTeam via FTPS
         if: steps.cfg.outputs.has_ftp == 'true'
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:
@@ -72,7 +77,7 @@ jobs:
           username: ${{ secrets.HOSTINGER_FTP_USERNAME }}
           password: ${{ secrets.HOSTINGER_FTP_PASSWORD }}
           protocol: ftps
-          local-dir: web/dist/hostinger-public_html/
+          local-dir: web/dist/FrmAnTsiTeam/
           server-dir: ${{ steps.cfg.outputs.ftp_dir }}
           exclude: |
             data/**
@@ -87,4 +92,4 @@ jobs:
           curl -fsS -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE}/purge_cache" \
             -H "Authorization: Bearer ${CF_TOKEN}" \
             -H "Content-Type: application/json" \
-            --data '{"files":["https://twisted23.com/","https://twisted23.com/index.html","https://twisted23.com/app.js","https://twisted23.com/styles.css"]}'
+            --data '{"files":["https://twisted23.com/FrmAnTsiTeam/","https://twisted23.com/FrmAnTsiTeam/index.html","https://twisted23.com/FrmAnTsiTeam/app.js","https://twisted23.com/FrmAnTsiTeam/styles.css"]}'
