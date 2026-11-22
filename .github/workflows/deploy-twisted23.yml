@@ -40,23 +40,49 @@ jobs:
           name: twisted23-hostinger-public_html
           path: web/dist/hostinger-public_html
 
-      - name: Deploy to Hostinger via FTPS (if secrets configured)
-        if: ${{ secrets.HOSTINGER_FTP_SERVER != '' && secrets.HOSTINGER_FTP_USERNAME != '' }}
+      - name: Check optional Hostinger & Cloudflare deploy secrets
+        id: cfg
+        env:
+          FTP_SERVER: ${{ secrets.HOSTINGER_FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.HOSTINGER_FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.HOSTINGER_FTP_PASSWORD }}
+          FTP_DIR: ${{ secrets.HOSTINGER_FTP_DIR }}
+          CF_ZONE: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [[ -n "$FTP_SERVER" && -n "$FTP_USERNAME" && -n "$FTP_PASSWORD" ]]; then
+            echo "has_ftp=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_ftp=false" >> "$GITHUB_OUTPUT"
+          fi
+          target_dir="${FTP_DIR:-./}"
+          echo "ftp_dir=$target_dir" >> "$GITHUB_OUTPUT"
+          if [[ -n "$CF_ZONE" && -n "$CF_TOKEN" ]]; then
+            echo "has_cf=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_cf=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy to Hostinger via FTPS
+        if: steps.cfg.outputs.has_ftp == 'true'
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:
           server: ${{ secrets.HOSTINGER_FTP_SERVER }}
           username: ${{ secrets.HOSTINGER_FTP_USERNAME }}
           password: ${{ secrets.HOSTINGER_FTP_PASSWORD }}
           local-dir: web/dist/hostinger-public_html/
-          server-dir: ${{ secrets.HOSTINGER_FTP_DIR || './' }}
+          server-dir: ${{ steps.cfg.outputs.ftp_dir }}
           exclude: |
             data/**
             config.php
 
-      - name: Purge Cloudflare static HTML cache on deploy (if secrets configured)
-        if: ${{ secrets.CLOUDFLARE_ZONE_ID != '' && secrets.CLOUDFLARE_API_TOKEN != '' }}
+      - name: Purge Cloudflare static HTML cache on deploy
+        if: steps.cfg.outputs.has_cf == 'true'
+        env:
+          CF_ZONE: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          curl -fsS -X POST "https://api.cloudflare.com/client/v4/zones/${{ secrets.CLOUDFLARE_ZONE_ID }}/purge_cache" \
-            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
+          curl -fsS -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE}/purge_cache" \
+            -H "Authorization: Bearer ${CF_TOKEN}" \
             -H "Content-Type: application/json" \
             --data '{"files":["https://twisted23.com/","https://twisted23.com/index.html","https://twisted23.com/app.js","https://twisted23.com/styles.css"]}'
