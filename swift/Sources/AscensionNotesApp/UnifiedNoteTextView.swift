@@ -142,6 +142,7 @@ struct UnifiedNoteTextView: NSViewRepresentable {
         textView.isAutomaticTextCompletionEnabled = enabled
         textView.isAutomaticTextReplacementEnabled = enabled
     }
+    static let imageMarkerRegex = try? NSRegularExpression(pattern: #"▸\[Image:[^\n\]]*\]"#)
 
     static func createStandardParagraphStyle() -> NSMutableParagraphStyle {
         let paragraph = NSMutableParagraphStyle()
@@ -764,6 +765,7 @@ struct UnifiedNoteTextView: NSViewRepresentable {
             let foldFont = NSFont.monospacedSystemFont(ofSize: max(11.0, store.editorFontSize - 1.5), weight: .semibold)
             let imageMarkerFont = NSFont.monospacedSystemFont(ofSize: max(11.0, store.editorFontSize - 1.5), weight: .medium)
             let foldBg = NSColor.systemYellow.withAlphaComponent(0.22)
+            let imageBg = NSColor.systemBlue.withAlphaComponent(0.14)
             let paragraph = UnifiedNoteTextView.createStandardParagraphStyle()
 
             let savedSelections = tv.selectedRanges
