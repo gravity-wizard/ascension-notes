@@ -256,15 +256,27 @@ public enum Base38Clock: Sendable {
         isLowerAlnumBase38(value) && isCleanClock(value, blockedSubstrings: blockedSubstrings)
     }
 
+    public static func sanitizeFavorite3LetterOffset(_ raw: String?, blockedSubstrings: [String]? = nil) -> String? {
+        guard let raw else { return nil }
+        let letters = String(raw.lowercased().filter { $0 >= "a" && $0 <= "z" }.prefix(3))
+        guard letters.count == 3,
+              isCleanLowerAlnumClock(letters, blockedSubstrings: blockedSubstrings) else {
+            return nil
+        }
+        return letters
+    }
+
     /// Formats an exact Unix timestamp as a clean lowercase Base-38 tag (<= maxLength chars).
     /// When the raw Base-38 string hits "666", a blocked word, or non-alnum symbols (^/|),
     /// keeps the leading MSDs intact (e.g. `2p` or `2p7`) and emits a pretty lossless
     /// 9-digit + minus-sign formula (`2p7abc-xyz`, 6 digits minus 3 digits).
+    /// When `favoriteOffset` is provided (e.g. "joy", "sun", or initials), it is prioritized first.
     public static func cleanExactClockExpression(
         unixSeconds: Int64 = Int64(Date().timeIntervalSince1970),
         contextWords: [String] = [],
         maxLength: Int = 17,
         alwaysUseDifferenceFormula: Bool = false,
+        favoriteOffset: String? = nil,
         blockedSubstrings: [String]? = nil
     ) -> ExactClockExpression {
         let clampedUnix = max(t0Unix, unixSeconds)
@@ -285,10 +297,15 @@ public enum Base38Clock: Sendable {
         }
 
         // Extract clean 3-char lowercase [a-z] picture words first (for 6-3 = 9 digits + '-'),
+        // prioritizing the Ascender's chosen favorite 3-letter offset if set,
         // then 2..6 char words as secondary fallback.
         var threeCharContext: [String] = []
         var otherContext: [String] = []
         var seenWords: Set<String> = []
+        if let favorite = sanitizeFavorite3LetterOffset(favoriteOffset, blockedSubstrings: blockedSubstrings) {
+            seenWords.insert(favorite)
+            threeCharContext.append(favorite)
+        }
         for rawWord in contextWords {
             let parts = rawWord
                 .lowercased()

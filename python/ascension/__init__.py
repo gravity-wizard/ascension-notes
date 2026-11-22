@@ -64,6 +64,7 @@ from .base38 import (
     jesus_clock_expression_to_datetime,
     jesus_clock_to_datetime,
     safe_jesus_clock,
+    sanitize_favorite_3_letter_offset,
     to_url_safe_base38,
 )
 from .notes_engine import (
@@ -134,6 +135,7 @@ __all__ = [
     "normalize_munsc_token",
     "parse_acode9",
     "safe_jesus_clock",
+    "sanitize_favorite_3_letter_offset",
     "save_custom_rules",
     "suggest_skip_vowels",
     "to_caret",

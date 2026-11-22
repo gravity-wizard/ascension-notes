@@ -176,8 +176,15 @@ enum RetinaImageSupport {
 
     private static func defaultScreenshotFilename() -> String {
         let now = Int64(Date().timeIntervalSince1970)
-        let tag = Base38Clock.cleanExactClockExpression(unixSeconds: now, contextWords: ["capture"], maxLength: 17).expression
-        return "Capture \(tag).png"
+        let fav = NotesStore.loadFavorite3LetterOffset()
+        let tag = Base38Clock.cleanExactClockExpression(
+            unixSeconds: now,
+            contextWords: ["capture"],
+            maxLength: 17,
+            alwaysUseDifferenceFormula: true,
+            favoriteOffset: fav
+        ).expression
+        return "\(tag).png"
     }
 
     static func preparePNG(fromFileURL url: URL) -> PreparedPNG? {
@@ -328,6 +335,8 @@ enum SmartImageRetitler {
             .replacingOccurrences(of: "_", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
+        let favoriteOffset = NotesStore.loadFavorite3LetterOffset()
+
         if !isBoilerplateStem(stem) {
             let cleaned = stem.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
             let capped = cleaned.count > 32 ? String(cleaned.prefix(32)).trimmingCharacters(in: .whitespaces) : cleaned
@@ -337,7 +346,8 @@ enum SmartImageRetitler {
                 unixSeconds: exactUnixTimestamp,
                 contextWords: contextWords,
                 maxLength: 17,
-                alwaysUseDifferenceFormula: true
+                alwaysUseDifferenceFormula: true,
+                favoriteOffset: favoriteOffset
             ).expression
             if subject.contains(expr) {
                 return ("\(subject).png", expr)
@@ -351,7 +361,8 @@ enum SmartImageRetitler {
             unixSeconds: exactUnixTimestamp,
             contextWords: vision.contextWords,
             maxLength: 17,
-            alwaysUseDifferenceFormula: true
+            alwaysUseDifferenceFormula: true,
+            favoriteOffset: favoriteOffset
         ).expression
         return ("\(expr).png", expr)
     }
@@ -482,6 +493,9 @@ struct RenameAttachmentPopover: View {
     @Binding var isPresented: Bool
 
     @State private var subjectDraft: String
+    @State private var favoriteOffsetDraft: String
+
+    private let quickOffsetPresets = ["sun", "joy", "zen", "gem", "oak"]
 
     init(store: NotesStore, noteID: UUID, attachment: NoteAttachment, isPresented: Binding<Bool>) {
         self.store = store
@@ -494,10 +508,15 @@ struct RenameAttachmentPopover: View {
                 base38Tag: attachment.base38TimestampTag
             )
         )
+        _favoriteOffsetDraft = State(initialValue: store.favorite3LetterOffset)
     }
 
     private var exactTimestamp: Int64 {
         attachment.exactUnixTimestamp ?? Int64(attachment.createdAt.timeIntervalSince1970)
+    }
+
+    private var sanitizedFavorite: String? {
+        Base38Clock.sanitizeFavorite3LetterOffset(favoriteOffsetDraft)
     }
 
     private var previewTag: String {
@@ -506,7 +525,8 @@ struct RenameAttachmentPopover: View {
             unixSeconds: exactTimestamp,
             contextWords: words,
             maxLength: 17,
-            alwaysUseDifferenceFormula: true
+            alwaysUseDifferenceFormula: true,
+            favoriteOffset: sanitizedFavorite
         ).expression
     }
 
@@ -516,7 +536,42 @@ struct RenameAttachmentPopover: View {
                 .font(.headline)
             TextField("What is this image? (e.g. Weeping WilLoW Tree)", text: $subjectDraft)
                 .textFieldStyle(.roundedBorder)
-                .frame(minWidth: 280)
+                .frame(minWidth: 300)
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    Text("Favorite 3-letter offset:")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField("joy, sun, initials", text: $favoriteOffsetDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption.monospaced())
+                        .frame(width: 112)
+                    if !favoriteOffsetDraft.trimmingCharacters(in: .whitespaces).isEmpty && sanitizedFavorite == nil {
+                        Text("3 letters a–z")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+                }
+                HStack(spacing: 4) {
+                    Button("Auto") {
+                        favoriteOffsetDraft = ""
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .tint(favoriteOffsetDraft.isEmpty ? retinaGold : .secondary)
+
+                    ForEach(quickOffsetPresets, id: \.self) { preset in
+                        Button(preset) {
+                            favoriteOffsetDraft = preset
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                        .font(.caption2.monospaced())
+                        .tint(sanitizedFavorite == preset ? retinaGold : .secondary)
+                    }
+                }
+            }
 
             HStack(spacing: 6) {
                 Text("Tag (≤17 chars):")
@@ -541,7 +596,13 @@ struct RenameAttachmentPopover: View {
                 }
                 Spacer()
                 Button("Save Title") {
-                    _ = store.smartRenameAttachment(attachment, in: noteID, subjectInput: subjectDraft)
+                    store.setFavorite3LetterOffset(favoriteOffsetDraft)
+                    _ = store.smartRenameAttachment(
+                        attachment,
+                        in: noteID,
+                        subjectInput: subjectDraft,
+                        favoriteOffset: store.favorite3LetterOffset
+                    )
                     isPresented = false
                 }
                 .keyboardShortcut(.defaultAction)

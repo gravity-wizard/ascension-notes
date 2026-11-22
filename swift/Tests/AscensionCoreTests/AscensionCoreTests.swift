@@ -280,6 +280,34 @@ final class AscensionCoreTests: XCTestCase {
             XCTAssertEqual(try Base38Clock.decodeClockExpression(res.expression), ts)
         }
 
+        // Ascender's chosen favorite 3-letter offset ('joy', 'sun', or initials 'HMF')
+        XCTAssertEqual(Base38Clock.sanitizeFavorite3LetterOffset("  HMF "), "hmf")
+        XCTAssertEqual(Base38Clock.sanitizeFavorite3LetterOffset("Joy!"), "joy")
+        XCTAssertNil(Base38Clock.sanitizeFavorite3LetterOffset("fuk"))
+        XCTAssertNil(Base38Clock.sanitizeFavorite3LetterOffset("ab"))
+
+        let favTs = try Base38Clock.decodeJesusClock("2p41w4")
+        for (favInput, expectedWord) in [("joy", "joy"), ("sun", "sun"), ("HMF", "hmf")] {
+            let favRes = Base38Clock.cleanExactClockExpression(
+                unixSeconds: favTs,
+                contextWords: ["Weeping", "Willow", "tree"],
+                maxLength: 17,
+                alwaysUseDifferenceFormula: true,
+                favoriteOffset: favInput
+            )
+            XCTAssertEqual(favRes.expression.count, 10)
+            XCTAssertTrue(favRes.expression.hasSuffix("-\(expectedWord)"))
+            XCTAssertEqual(try Base38Clock.decodeClockExpression(favRes.expression), favTs)
+        }
+
+        // If favoriteOffset would produce an anchor with '|' ("2p41w2" + "joy" == "2p4li|"), safely falls back
+        let dodgeRes = Base38Clock.cleanExactClockExpression(
+            unixSeconds: try Base38Clock.decodeJesusClock("2p41w2"),
+            alwaysUseDifferenceFormula: true,
+            favoriteOffset: "joy"
+        )
+        XCTAssertEqual(dodgeRes.expression, "2p4uop-sun")
+
         // Exact evaluation of "2p5000-334"
         let expected = try Base38Clock.decodeJesusClock("2p5000") - Base38Clock.decode("334")
         XCTAssertEqual(try Base38Clock.decodeClockExpression("2p5000-334"), expected)

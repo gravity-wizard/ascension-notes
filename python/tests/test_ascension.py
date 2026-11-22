@@ -47,6 +47,7 @@ from ascension import (
     make_skip_vowels_rule,
     parse_acode9,
     safe_jesus_clock,
+    sanitize_favorite_3_letter_offset,
     save_custom_rules,
     suggest_skip_vowels,
     to_caret,
@@ -542,6 +543,33 @@ class SkipVowelsAndAttachmentTests(unittest.TestCase):
             self.assertNotIn("^", res.expression)
             self.assertLessEqual(len(res.expression), 17)
             self.assertEqual(decode_clock_expression(res.expression), ts)
+
+        # Ascender's chosen favorite 3-letter offset ('joy', 'sun', or initials 'HMF')
+        self.assertEqual(sanitize_favorite_3_letter_offset("  HMF "), "hmf")
+        self.assertEqual(sanitize_favorite_3_letter_offset("Joy!"), "joy")
+        self.assertIsNone(sanitize_favorite_3_letter_offset("fuk"))
+        self.assertIsNone(sanitize_favorite_3_letter_offset("ab"))
+
+        fav_ts = decode_jesus_clock("2p41w4")
+        for fav_input, expected_word in [("joy", "joy"), ("sun", "sun"), ("HMF", "hmf")]:
+            fav_res = clean_exact_clock_expression(
+                fav_ts,
+                context_words=["Weeping", "Willow", "tree"],
+                max_length=17,
+                always_use_difference_formula=True,
+                favorite_offset=fav_input,
+            )
+            self.assertEqual(len(fav_res.expression), 10, fav_res.expression)
+            self.assertTrue(fav_res.expression.endswith(f"-{expected_word}"), fav_res.expression)
+            self.assertEqual(decode_clock_expression(fav_res.expression), fav_ts)
+
+        # If favorite_offset would produce an anchor with '|' ('2p41w2' + 'joy' == '2p4li|'), safely falls back
+        dodge_res = clean_exact_clock_expression(
+            decode_jesus_clock("2p41w2"),
+            always_use_difference_formula=True,
+            favorite_offset="joy",
+        )
+        self.assertEqual(dodge_res.expression, "2p4uop-sun")
 
         # Explicit round-anchor check for "2p5000-334"
         expected_2p5000_minus_334 = decode_jesus_clock("2p5000") - decode_base38("334")

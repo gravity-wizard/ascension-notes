@@ -257,18 +257,33 @@ def is_clean_lower_alnum_clock(
     return is_lower_alnum_base38(value) and is_clean_clock(value, blocked_substrings=blocked_substrings)
 
 
+def sanitize_favorite_3_letter_offset(
+    raw: str | None,
+    blocked_substrings: Iterable[str] | None = None,
+) -> str | None:
+    """Normalize an Ascender's chosen 3-letter offset (e.g. 'joy', 'sun', or initials 'HMF')."""
+    if not raw:
+        return None
+    letters = "".join(ch for ch in raw.lower() if "a" <= ch <= "z")[:3]
+    if len(letters) != 3 or not is_clean_lower_alnum_clock(letters, blocked_substrings=blocked_substrings):
+        return None
+    return letters
+
+
 def clean_exact_clock_expression(
     timestamp: TimestampLike = None,
     *,
     context_words: Iterable[str] = (),
     max_length: int = 17,
     always_use_difference_formula: bool = False,
+    favorite_offset: str | None = None,
     blocked_substrings: Iterable[str] | None = None,
 ) -> ExactClockExpression:
     """Format an exact timestamp as clean lowercase Base-38 (<= max_length chars).
 
     When the raw Base-38 value contains '666', a blocked word, or '^'/'|', keeps the leading
     MSDs intact and emits a pretty 9-digit + minus-sign formula ('2p7abc-xyz').
+    When `favorite_offset` is provided (e.g. 'joy', 'sun', or initials), it is prioritized first.
     """
     clamped_unix = max(T0UX, coerce_unix_timestamp(timestamp))
     elapsed = clamped_unix - T0UX
@@ -293,6 +308,9 @@ def clean_exact_clock_expression(
     three_ctx: list[str] = []
     other_ctx: list[str] = []
     seen: set[str] = set()
+    if fav := sanitize_favorite_3_letter_offset(favorite_offset, blocked_substrings=blocked_substrings):
+        seen.add(fav)
+        three_ctx.append(fav)
     for raw_word in context_words:
         for part in re.findall(r"[a-z]{2,6}", raw_word.lower()):
             if part in seen or not is_clean_lower_alnum_clock(part, blocked_substrings=blocked_substrings):

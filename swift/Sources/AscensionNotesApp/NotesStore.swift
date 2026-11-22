@@ -339,7 +339,24 @@ final class NotesStore {
 
     static let syncFolderDefaultsKey = "ascensionNotesSyncFolderPath"
     static let syncFolderBookmarkKey = "ascensionNotesSyncFolderBookmark"
+    static let favorite3LetterOffsetKey = "ascensionNotesFavorite3LetterOffset"
 
+    static func loadFavorite3LetterOffset() -> String {
+        let raw = UserDefaults.standard.string(forKey: favorite3LetterOffsetKey)
+        return Base38Clock.sanitizeFavorite3LetterOffset(raw) ?? ""
+    }
+
+    func setFavorite3LetterOffset(_ raw: String) {
+        let sanitized = Base38Clock.sanitizeFavorite3LetterOffset(raw) ?? ""
+        favorite3LetterOffset = sanitized
+        if sanitized.isEmpty {
+            UserDefaults.standard.removeObject(forKey: Self.favorite3LetterOffsetKey)
+        } else {
+            UserDefaults.standard.set(sanitized, forKey: Self.favorite3LetterOffsetKey)
+        }
+    }
+
+    var favorite3LetterOffset: String = NotesStore.loadFavorite3LetterOffset()
     var notes: [StoredNote] = []
     var customRules: [MUNSCRule] = []
     var a3odexEntries: [A3odexEntry] = A3odexCatalog.starterEntries
@@ -1633,7 +1650,9 @@ final class NotesStore {
         let resolvedTag = base38TimestampTag ?? Base38Clock.cleanExactClockExpression(
             unixSeconds: resolvedTs,
             contextWords: [filename],
-            maxLength: 17
+            maxLength: 17,
+            alwaysUseDifferenceFormula: true,
+            favoriteOffset: favorite3LetterOffset
         ).expression
 
         let cleanName = filename.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -1796,7 +1815,8 @@ final class NotesStore {
         in noteID: UUID,
         subjectInput: String,
         appendBase38Tag: Bool = true,
-        alwaysUseDifferenceFormula: Bool = true
+        alwaysUseDifferenceFormula: Bool = true,
+        favoriteOffset: String? = nil
     ) -> NoteAttachment? {
         let trimmedSubject = subjectInput
             .replacingOccurrences(of: ".png", with: "", options: .caseInsensitive)
@@ -1804,11 +1824,13 @@ final class NotesStore {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let exactTs = attachment.exactUnixTimestamp ?? Int64(attachment.createdAt.timeIntervalSince1970)
         let contextWords = trimmedSubject.components(separatedBy: CharacterSet.alphanumerics.inverted)
+        let resolvedFavorite = favoriteOffset ?? favorite3LetterOffset
         let clockExpr = Base38Clock.cleanExactClockExpression(
             unixSeconds: exactTs,
             contextWords: contextWords,
             maxLength: 17,
-            alwaysUseDifferenceFormula: alwaysUseDifferenceFormula
+            alwaysUseDifferenceFormula: alwaysUseDifferenceFormula,
+            favoriteOffset: resolvedFavorite
         ).expression
 
         let finalStem: String
