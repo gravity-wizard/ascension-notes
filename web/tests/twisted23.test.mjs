@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { decodeAcodeTimestamp, mintAcodeTimeSlug, mintAgyTimeTag, pickUniqueSlug, sanitizeSlug } from "../lib/images.mjs";
+import { decodeAcodeTimestamp, isCleanAcodeSequence, mintAcodeTimeSlug, mintAgyTimeTag, pickUniqueSlug, sanitizeSlug } from "../lib/images.mjs";
 import { createStore } from "../lib/store.mjs";
 import { createAppServer } from "../server.mjs";
 
-test("Custom names keep -agy; blank input uses Single Peak (___-a8a) or Triple Peak (___-a8a-a8a-a8a)", () => {
+test("Custom names keep -agy; blank input uses Single Peak (___-a8a) or Triple Peak (___-a8a-a8a-a8a) skipping 0 and 6", () => {
   assert.equal(sanitizeSlug("Uncle Norman"), "uncle-norman");
 
   const fixedUnix = 1795385000;
@@ -18,35 +18,51 @@ test("Custom names keep -agy; blank input uses Single Peak (___-a8a) or Triple P
   assert.notEqual(second, first);
   assert.match(second, /^uncle-norman-[0-9a-z]{6}-agy$/);
 
-  // Blank input -> Single Peak or Triple Peak, no 0 or 9 in a8a triads
+  // Blank input -> Single Peak or Triple Peak, digits in [1-57-9] (no 0 or 6)
   const blank = pickUniqueSlug("", {}, fixedUnix);
-  assert.match(blank, /^[1-9a-z_]{3}(-[a-z][1-8][a-z]){1,3}$/);
+  assert.match(blank, /^[1-9a-z_]{3}(-[a-z][1-57-9][a-z]){1,3}$/);
   assert.equal(decodeAcodeTimestamp(blank), fixedUnix);
 
-  // When a Single Peak second is found, verify both Single Peak and collision -> Triple Peak
+  // When a Single Peak second is found (including digit 9), verify Single Peak and collision -> Triple Peak
   const TRIAD = 54872;
   const EPOCH = 1584540571;
-  // lsd "a1a" = 10*1444 + 1*38 + 10 = 14488
-  const singleSec = EPOCH + 3843 * TRIAD + 14488;
+  // lsd "a9a" = 10*1444 + 9*38 + 10 = 14792
+  const singleSec = EPOCH + 3843 * TRIAD + 14792;
   const singleMinted = mintAcodeTimeSlug(singleSec);
   assert.equal(singleMinted.mode, "single");
-  assert.equal(singleMinted.canonical, "2p5^a1a");
-  assert.equal(singleMinted.slug, "2p5-a1a");
+  assert.equal(singleMinted.canonical, "2p5^a9a");
+  assert.equal(singleMinted.slug, "2p5-a9a");
   assert.equal(decodeAcodeTimestamp(singleMinted.canonical), singleSec);
   assert.equal(decodeAcodeTimestamp(singleMinted.slug), singleSec);
 
+  // Digit 6 is skipped in a8a triads -> lsd "a6a" (14678) falls back to Triple Peak
+  const sixSec = EPOCH + 3843 * TRIAD + (10 * 1444 + 6 * 38 + 10);
+  const sixMinted = mintAcodeTimeSlug(sixSec);
+  assert.equal(sixMinted.mode, "triple");
+  assert.match(sixMinted.canonical, /^2p5(\^[a-z][1-57-9][a-z]){3}$/);
+  assert.equal(decodeAcodeTimestamp(sixMinted.canonical), sixSec);
+
   // Collision on Single Peak switches to Triple Peak for the exact same second
-  const tripleAfterCollision = mintAcodeTimeSlug(singleSec, (cand) => cand === "2p5-a1a");
+  const tripleAfterCollision = mintAcodeTimeSlug(singleSec, (cand) => cand === "2p5-a9a");
   assert.equal(tripleAfterCollision.mode, "triple");
-  assert.match(tripleAfterCollision.canonical, /^2p5(\^[a-z][1-8][a-z]){3}$/);
+  assert.match(tripleAfterCollision.canonical, /^2p5(\^[a-z][1-57-9][a-z]){3}$/);
   assert.equal(decodeAcodeTimestamp(tripleAfterCollision.canonical), singleSec);
   assert.equal(decodeAcodeTimestamp(tripleAfterCollision.slug), singleSec);
 
   // First MSD Triad replaces '0' with '_'
-  const zeroMsdSec = EPOCH + (2 * 38 * 38 + 0 * 38 + 5) * TRIAD + 14488;
+  const zeroMsdSec = EPOCH + (2 * 38 * 38 + 0 * 38 + 5) * TRIAD + 14792;
   const zeroMsdMinted = mintAcodeTimeSlug(zeroMsdSec);
-  assert.equal(zeroMsdMinted.canonical, "2_5^a1a");
-  assert.equal(decodeAcodeTimestamp("2_5^a1a"), zeroMsdSec);
+  assert.equal(zeroMsdMinted.canonical, "2_5^a9a");
+  assert.equal(decodeAcodeTimestamp("2_5^a9a"), zeroMsdSec);
+
+  // Offensive combination checks across carets, digits, leetspeak, and 69/666
+  assert.equal(isCleanAcodeSequence("269^a1a"), false);
+  assert.equal(isCleanAcodeSequence("666^a1a"), false);
+  assert.equal(isCleanAcodeSequence("2p6^a9a"), false);
+  assert.equal(isCleanAcodeSequence("2p5^f7u^c5k^a1a"), false);
+  assert.equal(isCleanAcodeSequence("2p5^b1t^c5h^a1a"), false);
+  assert.equal(isCleanAcodeSequence("2p5^f4g^a1a^b2b"), false);
+  assert.equal(isCleanAcodeSequence("2p5^k9m^r7p^b4z"), true);
 
   const tag = mintAgyTimeTag(fixedUnix);
   assert.ok(tag.tag.endsWith("-agy"));
@@ -140,7 +156,7 @@ test("Minimal ImgBB flow: custom/short -agy filenames, 575KB limit, cache header
     });
     assert.equal(res.status, 200);
     body = await res.json();
-    assert.match(body.image.slug, /^[1-9a-z_]{3}(-[a-z][1-8][a-z]){1,3}$/);
+    assert.match(body.image.slug, /^[1-9a-z_]{3}(-[a-z][1-57-9][a-z]){1,3}$/);
     assert.ok(decodeAcodeTimestamp(body.image.slug) !== null);
 
     // 3rd upload uses direct binary application/octet-stream -> binary-test-<6chars>-agy.png

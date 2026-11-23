@@ -66,13 +66,26 @@ function decodeCompactVal(s) {
 }
 
 function a8aFromIdx(idx) {
+  const digits = "12345789";
   const count = 5408;
   const i = ((idx % count) + count) % count;
   const c0 = String.fromCharCode(97 + Math.floor(i / 208));
   const rem = i % 208;
-  const c1 = String.fromCharCode(49 + Math.floor(rem / 26));
+  const c1 = digits[Math.floor(rem / 26)];
   const c2 = String.fromCharCode(97 + (rem % 26));
   return `${c0}${c1}${c2}`;
+}
+
+function isCleanAcodeSeq(rawCode) {
+  const blocked = ["69", "666", "anal", "anus", "arse", "bitch", "btch", "cock", "c0ck", "cunt", "damn", "dick", "d1ck", "dyke", "fag", "fck", "fuk", "fuck", "hell", "jizz", "kike", "klan", "nazi", "nig", "n1g", "porn", "p0rn", "puss", "rape", "shit", "sh1t", "slut", "spic", "twat", "wank", "whor", "xxx"];
+  const joined = String(rawCode || "").toLowerCase().replace(/[\^-]/g, "").replace(/_/g, "0");
+  const lettersOnly = joined.replace(/[0-9]/g, "");
+  const digitsOnly = joined.replace(/[a-z]/g, "");
+  const leetI = joined.replace(/[01345789]/g, (c) => ({ 0: "o", 1: "i", 3: "e", 4: "a", 5: "s", 7: "t", 8: "b", 9: "g" }[c]));
+  const leetL = joined.replace(/[01345789]/g, (c) => ({ 0: "o", 1: "l", 3: "e", 4: "a", 5: "s", 7: "t", 8: "b", 9: "g" }[c]));
+  return !blocked.some(
+    (b) => joined.includes(b) || lettersOnly.includes(b) || digitsOnly.includes(b) || leetI.includes(b) || leetL.includes(b)
+  );
 }
 
 function buildAcodeTimeSlug() {
@@ -86,7 +99,7 @@ function buildAcodeTimeSlug() {
   const msd = encodeCompactVal(msdVal).padStart(3, "0").slice(-3).replace(/0/g, "_").replace(/\|/g, "_").replace(/\^/g, "-");
 
   const direct = encodeCompactVal(lsdVal);
-  if (/^[a-z][1-8][a-z]$/.test(direct) && !direct.includes("666")) {
+  if (/^[a-z][1-57-9][a-z]$/.test(direct) && isCleanAcodeSeq(`${msd}-${direct}`)) {
     return `${msd}-${direct}`;
   }
 
@@ -95,9 +108,10 @@ function buildAcodeTimeSlug() {
     const h2 = (Math.imul(elapsed ^ 0x85ebca6b, 3266489917) ^ Math.imul(attempt + 1, 668265263)) >>> 0;
     const t1 = a8aFromIdx(h1 % a8aCount);
     const t2 = a8aFromIdx(h2 % a8aCount);
+    if (!isCleanAcodeSeq(t1) || !isCleanAcodeSeq(t2)) continue;
     const needed = (((lsdVal - msdVal - decodeCompactVal(t1) - decodeCompactVal(t2)) % triadBase) + triadBase) % triadBase;
     const t3 = encodeCompactVal(needed);
-    if (/^[a-z][1-8][a-z]$/.test(t3)) {
+    if (/^[a-z][1-57-9][a-z]$/.test(t3) && isCleanAcodeSeq(`${msd}-${t1}-${t2}-${t3}`)) {
       return `${msd}-${t1}-${t2}-${t3}`;
     }
   }

@@ -126,9 +126,25 @@ function is_clean_alnum_tag(string $s): bool {
     return true;
 }
 
-function is_clean_msd_or_a8a(string $s): bool {
-    $alnum = strtr($s, ['_' => '0', '-' => 'x']);
-    return is_clean_alnum_tag($alnum);
+function is_clean_acode_sequence(string $rawCode): bool {
+    $joined = strtr(strtolower($rawCode), ['^' => '', '-' => '', '_' => '0']);
+    $lettersOnly = preg_replace('/[0-9]/', '', $joined) ?? '';
+    $digitsOnly = preg_replace('/[a-z]/', '', $joined) ?? '';
+    $leetI = strtr($joined, ['0' => 'o', '1' => 'i', '3' => 'e', '4' => 'a', '5' => 's', '7' => 't', '8' => 'b', '9' => 'g']);
+    $leetL = strtr($joined, ['0' => 'o', '1' => 'l', '3' => 'e', '4' => 'a', '5' => 's', '7' => 't', '8' => 'b', '9' => 'g']);
+    $blocked = ['69', '666', 'anal', 'anus', 'arse', 'bitch', 'btch', 'cock', 'c0ck', 'cunt', 'damn', 'dick', 'd1ck', 'dyke', 'fag', 'fck', 'fuk', 'fuck', 'hell', 'jizz', 'kike', 'klan', 'nazi', 'nig', 'n1g', 'porn', 'p0rn', 'puss', 'rape', 'shit', 'sh1t', 'slut', 'spic', 'twat', 'wank', 'whor', 'xxx'];
+    foreach ($blocked as $b) {
+        if (
+            str_contains($joined, $b) ||
+            str_contains($lettersOnly, $b) ||
+            str_contains($digitsOnly, $b) ||
+            str_contains($leetI, $b) ||
+            str_contains($leetL, $b)
+        ) {
+            return false;
+        }
+    }
+    return true;
 }
 
 function format_msd_triad(int $msdVal): string {
@@ -137,17 +153,18 @@ function format_msd_triad(int $msdVal): string {
 }
 
 function a8a_from_index(int $idx): string {
+    $digits = '12345789';
     $count = 5408; // 26 * 8 * 26
     $i = (($idx % $count) + $count) % $count;
     $c0 = chr(97 + intdiv($i, 208));
     $rem = $i % 208;
-    $c1 = chr(49 + intdiv($rem, 26));
+    $c1 = $digits[intdiv($rem, 26)];
     $c2 = chr(97 + ($rem % 26));
     return $c0 . $c1 . $c2;
 }
 
 function is_a8a_triad(string $s): bool {
-    return preg_match('/^[a-z][1-8][a-z]$/', $s) === 1;
+    return preg_match('/^[a-z][1-57-9][a-z]$/', $s) === 1;
 }
 
 function mint_acode_time_slug(int $unixSeconds, array $existing): array {
@@ -161,10 +178,10 @@ function mint_acode_time_slug(int $unixSeconds, array $existing): array {
     $msd = format_msd_triad($msdVal);
 
     $directLsd = encode_compact_time($lsdVal);
-    if (strlen($directLsd) === 3 && is_a8a_triad($directLsd) && is_clean_alnum_tag($directLsd)) {
+    if (strlen($directLsd) === 3 && is_a8a_triad($directLsd)) {
         $canonical = "{$msd}^{$directLsd}";
         $slug = "{$msd}-{$directLsd}";
-        if (is_clean_msd_or_a8a($msd . $directLsd) && !isset($existing[$slug]) && !isset($existing[$canonical])) {
+        if (is_clean_acode_sequence($canonical) && !isset($existing[$slug]) && !isset($existing[$canonical])) {
             return ['slug' => $slug, 'canonical' => $canonical];
         }
     }
@@ -174,17 +191,17 @@ function mint_acode_time_slug(int $unixSeconds, array $existing): array {
         $h2 = ((($elapsed ^ 0x85ebca6b) * 3266489917) ^ (($attempt + 1) * 668265263)) & 0x7fffffff;
         $t1 = a8a_from_index($h1 % $a8aCount);
         $t2 = a8a_from_index($h2 % $a8aCount);
-        if (!is_clean_alnum_tag($t1) || !is_clean_alnum_tag($t2)) continue;
+        if (!is_clean_acode_sequence($t1) || !is_clean_acode_sequence($t2)) continue;
 
         $v1 = decode_compact_time($t1) ?? 0;
         $v2 = decode_compact_time($t2) ?? 0;
         $needed = ((($lsdVal - $msdVal - $v1 - $v2) % $triadBase) + $triadBase) % $triadBase;
         $t3 = encode_compact_time($needed);
-        if (strlen($t3) !== 3 || !is_a8a_triad($t3) || !is_clean_alnum_tag($t3)) continue;
-        if (!is_clean_msd_or_a8a($msd . $t1 . $t2 . $t3)) continue;
+        if (strlen($t3) !== 3 || !is_a8a_triad($t3)) continue;
 
         $canonical = "{$msd}^{$t1}^{$t2}^{$t3}";
         $slug = "{$msd}-{$t1}-{$t2}-{$t3}";
+        if (!is_clean_acode_sequence($canonical)) continue;
         if (!isset($existing[$slug]) && !isset($existing[$canonical])) {
             return ['slug' => $slug, 'canonical' => $canonical];
         }

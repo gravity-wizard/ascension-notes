@@ -9,7 +9,8 @@ const TRIAD_BASE = TIME_BASE * TIME_BASE * TIME_BASE; // 54872
 const A8A_COUNT = 26 * 8 * 26; // 5408
 const TIME_EPOCH = 1584540571;
 const AGY_OFFSET_VAL = 10 * TIME_BASE * TIME_BASE + 16 * TIME_BASE + 34; // decode("agy") = 15082
-const BLOCKED_PARTS = ["666", "anal", "anus", "arse", "bitch", "btch", "cock", "c0ck", "cunt", "damn", "dick", "d1ck", "dyke", "fag", "fck", "fuk", "fuck", "hell", "jizz", "kike", "klan", "nazi", "nig", "n1g", "porn", "p0rn", "puss", "rape", "shit", "sh1t", "slut", "spic", "twat", "wank", "whor", "xxx"];
+const A8A_DIGITS = "12345789";
+const BLOCKED_PARTS = ["69", "666", "anal", "anus", "arse", "bitch", "btch", "cock", "c0ck", "cunt", "damn", "dick", "d1ck", "dyke", "fag", "fck", "fuk", "fuck", "hell", "jizz", "kike", "klan", "nazi", "nig", "n1g", "porn", "p0rn", "puss", "rape", "shit", "sh1t", "slut", "spic", "twat", "wank", "whor", "xxx"];
 
 export function getMaxImageBytes() {
   const val = Number(process.env.TWISTED23_MAX_IMAGE_BYTES || DEFAULT_MAX_IMAGE_BYTES);
@@ -49,10 +50,24 @@ function isCleanAlnumTag(s) {
   return !BLOCKED_PARTS.some((b) => s.includes(b) || leet.includes(b));
 }
 
-function isCleanMsdOrA8a(s) {
-  const alnum = s.replace(/_/g, "0").replace(/-/g, "x");
-  const leet = alnum.replace(/[0134578]/g, (c) => ({ 0: "o", 1: "i", 3: "e", 4: "a", 5: "s", 7: "t", 8: "b" }[c]));
-  return !BLOCKED_PARTS.some((b) => alnum.includes(b) || leet.includes(b));
+export function isCleanAcodeSequence(rawCode) {
+  const joined = String(rawCode || "")
+    .toLowerCase()
+    .replace(/[\^-]/g, "")
+    .replace(/_/g, "0");
+  const lettersOnly = joined.replace(/[0-9]/g, "");
+  const digitsOnly = joined.replace(/[a-z]/g, "");
+  const leetI = joined.replace(/[01345789]/g, (c) => ({ 0: "o", 1: "i", 3: "e", 4: "a", 5: "s", 7: "t", 8: "b", 9: "g" }[c]));
+  const leetL = joined.replace(/[01345789]/g, (c) => ({ 0: "o", 1: "l", 3: "e", 4: "a", 5: "s", 7: "t", 8: "b", 9: "g" }[c]));
+
+  return !BLOCKED_PARTS.some(
+    (b) =>
+      joined.includes(b) ||
+      lettersOnly.includes(b) ||
+      digitsOnly.includes(b) ||
+      leetI.includes(b) ||
+      leetL.includes(b)
+  );
 }
 
 function formatMsdTriad(msdVal) {
@@ -64,13 +79,13 @@ function a8aFromIndex(idx) {
   const i = ((idx % A8A_COUNT) + A8A_COUNT) % A8A_COUNT;
   const c0 = String.fromCharCode(97 + Math.floor(i / 208));
   const rem = i % 208;
-  const c1 = String.fromCharCode(49 + Math.floor(rem / 26));
+  const c1 = A8A_DIGITS[Math.floor(rem / 26)];
   const c2 = String.fromCharCode(97 + (rem % 26));
   return `${c0}${c1}${c2}`;
 }
 
 export function isA8aTriad(s) {
-  return /^[a-z][1-8][a-z]$/.test(String(s || ""));
+  return /^[a-z][1-57-9][a-z]$/.test(String(s || ""));
 }
 
 export function mintAcodeTimeSlug(unixSeconds = Math.floor(Date.now() / 1000), isTakenFn = () => false) {
@@ -82,10 +97,10 @@ export function mintAcodeTimeSlug(unixSeconds = Math.floor(Date.now() / 1000), i
 
   // 1. Single Peak: ___^a8a (URL-safe: ___-a8a) when LSD triad is naturally a8a and clean/free
   const directLsd = encodeCompactTime(lsdVal);
-  if (directLsd.length === 3 && isA8aTriad(directLsd) && isCleanAlnumTag(directLsd)) {
+  if (directLsd.length === 3 && isA8aTriad(directLsd)) {
     const canonical = `${msd}^${directLsd}`;
     const slug = `${msd}-${directLsd}`;
-    if (isCleanMsdOrA8a(msd + directLsd) && !isTakenFn(slug) && !isTakenFn(canonical)) {
+    if (isCleanAcodeSequence(canonical) && !isTakenFn(slug) && !isTakenFn(canonical)) {
       return { slug, canonical, mode: "single", unixSeconds: sec };
     }
   }
@@ -97,17 +112,17 @@ export function mintAcodeTimeSlug(unixSeconds = Math.floor(Date.now() / 1000), i
     const h2 = (Math.imul(elapsed ^ 0x85ebca6b, 3266489917) ^ Math.imul(attempt + 1, 668265263)) >>> 0;
     const t1 = a8aFromIndex(h1 % A8A_COUNT);
     const t2 = a8aFromIndex(h2 % A8A_COUNT);
-    if (!isCleanAlnumTag(t1) || !isCleanAlnumTag(t2)) continue;
+    if (!isCleanAcodeSequence(t1) || !isCleanAcodeSequence(t2)) continue;
 
     const v1 = decodeCompactTime(t1);
     const v2 = decodeCompactTime(t2);
     const needed = (((lsdVal - msdVal - v1 - v2) % TRIAD_BASE) + TRIAD_BASE) % TRIAD_BASE;
     const t3 = encodeCompactTime(needed);
-    if (t3.length !== 3 || !isA8aTriad(t3) || !isCleanAlnumTag(t3)) continue;
-    if (!isCleanMsdOrA8a(`${msd}${t1}${t2}${t3}`)) continue;
+    if (t3.length !== 3 || !isA8aTriad(t3)) continue;
 
     const canonical = `${msd}^${t1}^${t2}^${t3}`;
     const slug = `${msd}-${t1}-${t2}-${t3}`;
+    if (!isCleanAcodeSequence(canonical)) continue;
     if (!isTakenFn(slug) && !isTakenFn(canonical)) {
       return { slug, canonical, mode: "triple", unixSeconds: sec };
     }
