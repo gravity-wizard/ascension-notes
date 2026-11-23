@@ -40,6 +40,20 @@
               placeholder="Uncle Norman (or leave blank for ultra-short URL)"
             />
           </div>
+          <div class="field-row">
+            <div class="field" style="margin-bottom: 0;">
+              <label for="size-preset">Size cap</label>
+              <select id="size-preset">
+                <option value="575" selected>575 KB (Default)</option>
+                <option value="385">385 KB (Medium)</option>
+                <option value="57">57 KB (Avatar)</option>
+              </select>
+            </div>
+            <label class="check-inline" for="retina-1x">
+              <input type="checkbox" id="retina-1x" />
+              <span>1× size (½ px for Apple Notes)</span>
+            </label>
+          </div>
           <div class="status-line" id="staging-meta"></div>
           <div class="btn-row">
             <button type="button" class="primary" id="btn-upload">Upload</button>
@@ -76,6 +90,14 @@
         <div class="copy-group">
           <input type="text" readonly id="out-viewer" />
           <button type="button" class="copy-btn" data-target="out-viewer">Copy</button>
+        </div>
+      </div>
+
+      <div class="code-row">
+        <label for="out-slogbog">SLogBog sup×2 centered BBCode</label>
+        <div class="copy-group">
+          <textarea readonly rows="2" id="out-slogbog"></textarea>
+          <button type="button" class="copy-btn" data-target="out-slogbog">Copy</button>
         </div>
       </div>
 

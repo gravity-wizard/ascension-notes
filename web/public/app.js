@@ -199,17 +199,30 @@ function showResults(imageRecord) {
 
   document.getElementById("out-direct").value = imageRecord.snippets.directUrl;
   document.getElementById("out-viewer").value = imageRecord.snippets.viewerUrl;
+  document.getElementById("out-slogbog").value =
+    `[center][url=${imageRecord.snippets.viewerUrl}][img]${imageRecord.snippets.directUrl}[/img][/url]\n` +
+    `[sup][sup][url=${imageRecord.snippets.viewerUrl}]Linked image courtesy of AnTsiTm[/url][/sup][/sup][/center]`;
   document.getElementById("out-html").value = imageRecord.snippets.html;
   document.getElementById("out-html-linked").value = imageRecord.snippets.htmlLinked;
   document.getElementById("out-bbcode").value = imageRecord.snippets.bbcodeLinked;
   document.getElementById("out-markdown").value = imageRecord.snippets.markdown;
 }
 
+function getSelectedBudgetBytes() {
+  const presetEl = document.getElementById("size-preset");
+  const kb = Number(presetEl?.value || 575);
+  const requested = Number.isFinite(kb) && kb > 0 ? kb * 1024 : maxImageBytes;
+  return Math.min(maxImageBytes, requested);
+}
+
 async function prepareBytesForUpload() {
   if (!stagedFile) return null;
+  const targetMaxBytes = getSelectedBudgetBytes();
+  const isRetina1x = Boolean(document.getElementById("retina-1x")?.checked);
   if (
+    !isRetina1x &&
     stagedFile.originalBytes > 0 &&
-    stagedFile.originalBytes <= maxImageBytes &&
+    stagedFile.originalBytes <= targetMaxBytes &&
     /^image\/(png|jpeg|webp|gif)$/.test(stagedFile.mime)
   ) {
     return {
@@ -219,7 +232,10 @@ async function prepareBytesForUpload() {
       dataUrl: stagedFile.dataUrl,
     };
   }
-  const compressed = await compressDataUrlToBudget(stagedFile.dataUrl, { maxBytes: maxImageBytes });
+  const compressed = await compressDataUrlToBudget(stagedFile.dataUrl, {
+    maxBytes: targetMaxBytes,
+    scaleFactor: isRetina1x ? 0.5 : 1,
+  });
   return {
     blob: compressed.blob,
     bytes: compressed.bytes,

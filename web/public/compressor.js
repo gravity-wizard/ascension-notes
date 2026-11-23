@@ -22,7 +22,7 @@ function blobToBase64(blob) {
   });
 }
 
-export async function compressDataUrlToBudget(dataUrl, { maxBytes = 575 * 1024 } = {}) {
+export async function compressDataUrlToBudget(dataUrl, { maxBytes = 575 * 1024, scaleFactor = 1 } = {}) {
   const img = await new Promise((resolve, reject) => {
     const el = new Image();
     el.onload = () => resolve(el);
@@ -30,16 +30,19 @@ export async function compressDataUrlToBudget(dataUrl, { maxBytes = 575 * 1024 }
     el.src = dataUrl;
   });
 
+  const safeScale = Number.isFinite(scaleFactor) && scaleFactor > 0 && scaleFactor <= 1 ? scaleFactor : 1;
+  const baseW = Math.max(1, Math.round(img.naturalWidth * safeScale));
+  const baseH = Math.max(1, Math.round(img.naturalHeight * safeScale));
   const maxEdges = [2048, 1600, 1280, 960, 720, 480, 320];
   const mimes = ["image/webp", "image/jpeg"];
   let bestBlob = null;
-  let usedWidth = img.naturalWidth;
-  let usedHeight = img.naturalHeight;
+  let usedWidth = baseW;
+  let usedHeight = baseH;
 
   for (const edge of maxEdges) {
-    const scale = Math.min(1, edge / Math.max(img.naturalWidth, img.naturalHeight));
-    const w = Math.max(1, Math.round(img.naturalWidth * scale));
-    const h = Math.max(1, Math.round(img.naturalHeight * scale));
+    const scale = Math.min(1, edge / Math.max(baseW, baseH));
+    const w = Math.max(1, Math.round(baseW * scale));
+    const h = Math.max(1, Math.round(baseH * scale));
     const canvas = document.createElement("canvas");
     canvas.width = w;
     canvas.height = h;
