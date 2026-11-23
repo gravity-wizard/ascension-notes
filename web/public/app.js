@@ -1,7 +1,8 @@
 import { compressDataUrlToBudget } from "./compressor.js";
 
 let maxImageBytes = 575 * 1024;
-let stagedFile = null; // { dataUrl, originalName, originalBytes }
+let stagedFile = null; // { file, dataUrl, originalName, originalBytes, mime }
+let usePhpRouteFallback = false;
 
 const dropzone = document.getElementById("dropzone");
 const fileInput = document.getElementById("file-input");
@@ -15,6 +16,27 @@ const btnSaveLocal = document.getElementById("btn-save-local");
 const btnClear = document.getElementById("btn-clear");
 const resultsCard = document.getElementById("results-card");
 const uploadCard = document.getElementById("upload-card");
+
+function folderBaseUrl() {
+  const u = new URL(window.location.href);
+  u.search = "";
+  u.hash = "";
+  if (!u.pathname.endsWith("/") && !u.pathname.split("/").pop().includes(".")) {
+    u.pathname += "/";
+  } else if (u.pathname.split("/").pop().includes(".")) {
+    u.pathname = u.pathname.replace(/[^/]+$/, "");
+  }
+  return u.toString();
+}
+
+function apiEndpoint(route) {
+  const cleanRoute = route.replace(/^\/+/, "");
+  const base = folderBaseUrl();
+  if (usePhpRouteFallback) {
+    return `${base}api.php?route=${encodeURIComponent(cleanRoute)}`;
+  }
+  return `${base}api/${cleanRoute}`;
+}
 
 function formatKb(bytes) {
   return `${(bytes / 1024).toFixed(1)} KB`;
@@ -52,17 +74,26 @@ function sanitizeLocalFilename(raw, ext) {
 }
 
 async function fetchConfig() {
-  try {
-    const res = await fetch("api/health");
-    const data = await res.json();
-    if (data?.maxImageBytes) {
-      maxImageBytes = Number(data.maxImageBytes) || maxImageBytes;
-      document.getElementById("limit-note").textContent =
-        `JPG, PNG, WebP, GIF · ${Math.round(maxImageBytes / 1024)} KB max`;
+  for (const usePhp of [false, true]) {
+    usePhpRouteFallback = usePhp;
+    const url = apiEndpoint("health");
+    try {
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (data?.ok) {
+        if (data.maxImageBytes) {
+          maxImageBytes = Number(data.maxImageBytes) || maxImageBytes;
+          document.getElementById("limit-note").textContent =
+            `JPG, PNG, WebP, GIF · ${Math.round(maxImageBytes / 1024)} KB max`;
+        }
+        return;
+      }
+    } catch {
+      // Try next route form
     }
-  } catch {
-    // Keep default 575 KB UI hint
   }
+  usePhpRouteFallback = false;
 }
 
 function stageFile(file) {
@@ -70,6 +101,7 @@ function stageFile(file) {
   const reader = new FileReader();
   reader.onload = () => {
     stagedFile = {
+      file,
       dataUrl: String(reader.result || ""),
       originalName: file.name || "image.png",
       originalBytes: file.size || 0,
@@ -108,11 +140,8 @@ async function prepareBytesForUpload() {
     stagedFile.originalBytes <= maxImageBytes &&
     /^image\/(png|jpeg|webp|gif)$/.test(stagedFile.mime)
   ) {
-    const base64 = stagedFile.dataUrl.includes(",")
-      ? stagedFile.dataUrl.split(",", 2)[1]
-      : stagedFile.dataUrl;
     return {
-      dataBase64: base64,
+      blob: stagedFile.file,
       bytes: stagedFile.originalBytes,
       ext: stagedFile.mime === "image/jpeg" ? "jpg" : stagedFile.mime.split("/")[1],
       dataUrl: stagedFile.dataUrl,
@@ -120,7 +149,7 @@ async function prepareBytesForUpload() {
   }
   const compressed = await compressDataUrlToBudget(stagedFile.dataUrl, { maxBytes: maxImageBytes });
   return {
-    dataBase64: compressed.dataBase64,
+    blob: compressed.blob,
     bytes: compressed.bytes,
     ext: compressed.mime === "image/jpeg" ? "jpg" : "webp",
     dataUrl: `data:${compressed.mime};base64,${compressed.dataBase64}`,
@@ -190,29 +219,43 @@ btnUpload.addEventListener("click", async () => {
   if (!stagedFile) return;
   btnUpload.disabled = true;
   uploadStatus.className = "status-line";
+  let targetUrl = apiEndpoint("images/upload");
   try {
     uploadStatus.textContent = "Preparing image...";
     const prepared = await prepareBytesForUpload();
     uploadStatus.textContent = `Uploading ${formatKb(prepared.bytes)}...`;
 
-    const res = await fetch("api/images/upload", {
+    let res = await fetch(targetUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        dataBase64: prepared.dataBase64,
-        customName: customNameInput.value.trim(),
-      }),
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "X-Custom-Name": encodeURIComponent(customNameInput.value.trim()),
+      },
+      body: prepared.blob,
     });
+    if ((res.status === 404 || res.status === 405) && !usePhpRouteFallback) {
+      usePhpRouteFallback = true;
+      targetUrl = apiEndpoint("images/upload");
+      res = await fetch(targetUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "X-Custom-Name": encodeURIComponent(customNameInput.value.trim()),
+        },
+        body: prepared.blob,
+      });
+    }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      throw new Error(data.error || `Upload failed (${res.status})`);
+      throw new Error(data.error || `Upload failed (${res.status}) at ${targetUrl}`);
     }
     showResults(data.image);
     const url = new URL(window.location.href);
     url.searchParams.set("img", data.image.slug);
     window.history.replaceState({}, "", url.toString());
   } catch (err) {
-    uploadStatus.textContent = err.message;
+    const msg = err?.message || "Network error";
+    uploadStatus.textContent = msg.includes(targetUrl) ? msg : `Failed to fetch ${folderBaseUrl()} (${msg})`;
     uploadStatus.className = "status-line error";
   } finally {
     btnUpload.disabled = false;
@@ -248,16 +291,15 @@ async function loadExistingIfQueryParam() {
   const slug = new URLSearchParams(window.location.search).get("img");
   if (!slug) return;
   try {
-    const res = await fetch(`api/images/${encodeURIComponent(slug)}`);
+    const res = await fetch(apiEndpoint(`images/${encodeURIComponent(slug)}`));
     if (!res.ok) return;
     const data = await res.json();
     if (data?.image) {
       showResults(data.image);
     }
   } catch {
-    // Ignore missing/offline viewer lookup
+    // Ignore offline/missing viewer lookup
   }
 }
 
-fetchConfig();
-loadExistingIfQueryParam();
+fetchConfig().then(() => loadExistingIfQueryParam());

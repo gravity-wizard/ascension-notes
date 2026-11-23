@@ -116,13 +116,18 @@ test("Minimal ImgBB flow: custom/short -agy filenames, 575KB limit, cache header
     body = await res.json();
     assert.match(body.image.slug, /^[0-9a-z]{6}-agy$/);
 
-    // 3rd upload succeeds, 4th hits IP quota (429)
+    // 3rd upload uses direct binary application/octet-stream -> binary-test-<6chars>-agy.png
     res = await fetch(`${baseUrl}/api/images/upload`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ dataBase64: tinyPng.toString("base64") }),
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "X-Custom-Name": encodeURIComponent("Binary Test"),
+      },
+      body: tinyPng,
     });
     assert.equal(res.status, 200);
+    body = await res.json();
+    assert.match(body.image.slug, /^binary-test-[0-9a-z]{6}-agy$/);
 
     res = await fetch(`${baseUrl}/api/images/upload`, {
       method: "POST",

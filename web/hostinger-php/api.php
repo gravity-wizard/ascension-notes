@@ -164,13 +164,28 @@ if ($route === 'health') {
 }
 
 if ($route === 'images/upload' && $method === 'POST') {
-    $b = read_json_body();
-    $rawData = (string)($b['dataBase64'] ?? $b['dataUrl'] ?? '');
-    if ($rawData === '') json_out(400, ['ok' => false, 'error' => 'Choose an image file to upload.']);
-    $b64 = str_contains($rawData, ',') ? explode(',', $rawData, 2)[1] : $rawData;
-    $bytes = base64_decode($b64, true);
-    if ($bytes === false) json_out(400, ['ok' => false, 'error' => 'Invalid image data.']);
+    $ctype = strtolower((string)($_SERVER['CONTENT_TYPE'] ?? ''));
+    $bytes = '';
+    $customName = '';
 
+    if (isset($_FILES['file']) && is_uploaded_file($_FILES['file']['tmp_name'])) {
+        $bytes = (string)file_get_contents($_FILES['file']['tmp_name']);
+        $customName = (string)($_POST['customName'] ?? $_POST['subject'] ?? '');
+    } elseif (str_starts_with($ctype, 'application/octet-stream')) {
+        $bytes = (string)file_get_contents('php://input');
+        $customName = rawurldecode((string)($_SERVER['HTTP_X_CUSTOM_NAME'] ?? ''));
+    } else {
+        $b = read_json_body();
+        $rawData = (string)($b['dataBase64'] ?? $b['dataUrl'] ?? '');
+        if ($rawData === '') json_out(400, ['ok' => false, 'error' => 'Choose an image file to upload.']);
+        $b64 = str_contains($rawData, ',') ? explode(',', $rawData, 2)[1] : $rawData;
+        $decoded = base64_decode($b64, true);
+        if ($decoded === false) json_out(400, ['ok' => false, 'error' => 'Invalid image data.']);
+        $bytes = $decoded;
+        $customName = (string)($b['customName'] ?? $b['subject'] ?? '');
+    }
+
+    if ($bytes === '') json_out(400, ['ok' => false, 'error' => 'Empty image payload.']);
     $fmt = detect_image_format($bytes);
     if (!$fmt) json_out(400, ['ok' => false, 'error' => 'Only PNG, JPEG, WebP, and GIF images are supported.']);
     $maxBytes = (int)$config['max_image_bytes'];
@@ -183,13 +198,12 @@ if ($route === 'images/upload' && $method === 'POST') {
     $dayKey = 'ip:' . $ipHash . ':' . gmdate('Y-m-d');
     $rootUrl = base_url_prefix();
 
-    $res = with_store($config, function (array &$state, bool &$mutate) use ($config, $b, $bytes, $fmt, $maxBytes, $dailyQuota, $dayKey, $rootUrl): array {
+    $res = with_store($config, function (array &$state, bool &$mutate) use ($config, $customName, $bytes, $fmt, $maxBytes, $dailyQuota, $dayKey, $rootUrl): array {
         $used = (int)($state['dailyUploadsByUserDay'][$dayKey] ?? 0);
         if ($used >= $dailyQuota) {
             return ['status' => 429, 'body' => ['ok' => false, 'error' => 'Daily upload limit reached. Try again tomorrow.']];
         }
 
-        $customName = (string)($b['customName'] ?? $b['subject'] ?? '');
         $slug = pick_unique_slug($customName, $state['imagesBySlug']);
         $storedName = "{$slug}.{$fmt['ext']}";
         $uploadsDir = rtrim($config['data_dir'], '/') . '/uploads';

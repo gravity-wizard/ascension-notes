@@ -34,16 +34,40 @@ export async function handleImageUpload(req, res, store = defaultStore) {
   }
 
   const maxBytes = getMaxImageBytes();
-  const body = await readJsonBody(req, Math.ceil(maxBytes * 1.45) + 64 * 1024);
-  const rawDataUrlOrB64 = String(body.dataBase64 || body.dataUrl || "").trim();
-  if (!rawDataUrlOrB64) {
-    return sendJson(res, 400, { ok: false, error: "Choose an image file to upload." });
-  }
+  const ctype = String(req.headers["content-type"] || "").toLowerCase();
+  let buffer;
+  let customName = "";
 
-  const b64Part = rawDataUrlOrB64.includes(",")
-    ? rawDataUrlOrB64.split(",", 2)[1]
-    : rawDataUrlOrB64;
-  const buffer = Buffer.from(b64Part, "base64");
+  if (ctype.startsWith("application/octet-stream")) {
+    const chunks = [];
+    let size = 0;
+    const hardLimit = maxBytes + 64 * 1024;
+    for await (const chunk of req) {
+      size += chunk.length;
+      if (size > hardLimit) {
+        return sendJson(res, 413, { ok: false, error: `Image exceeds ${(maxBytes / 1024).toFixed(0)} KB limit.` });
+      }
+      chunks.push(chunk);
+    }
+    buffer = Buffer.concat(chunks);
+    const rawHeaderName = String(req.headers["x-custom-name"] || "");
+    try {
+      customName = decodeURIComponent(rawHeaderName);
+    } catch {
+      customName = rawHeaderName;
+    }
+  } else {
+    const body = await readJsonBody(req, Math.ceil(maxBytes * 1.45) + 64 * 1024);
+    const rawDataUrlOrB64 = String(body.dataBase64 || body.dataUrl || "").trim();
+    if (!rawDataUrlOrB64) {
+      return sendJson(res, 400, { ok: false, error: "Choose an image file to upload." });
+    }
+    const b64Part = rawDataUrlOrB64.includes(",")
+      ? rawDataUrlOrB64.split(",", 2)[1]
+      : rawDataUrlOrB64;
+    buffer = Buffer.from(b64Part, "base64");
+    customName = String(body.customName || body.subject || "");
+  }
 
   const ip = getClientIp(req);
   const ipHash = crypto.createHash("sha256").update(String(ip)).digest("hex").slice(0, 12);
@@ -62,7 +86,7 @@ export async function handleImageUpload(req, res, store = defaultStore) {
 
   const record = buildImageRecord({
     buffer,
-    customName: body.customName || body.subject || "",
+    customName,
     existingImages: preState.imagesBySlug || {},
     clientIp: ip,
     origin: requestOrigin(req),
