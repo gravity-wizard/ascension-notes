@@ -8,17 +8,19 @@ body {
   background: #f5f6f8;
   color: #1f2937;
   line-height: 1.5;
-  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
 }
 
 .topbar {
   background: #ffffff;
   border-bottom: 1px solid #e5e7eb;
-  padding: 12px 20px;
+  padding: 10px 18px;
 }
 
 .topbar-inner {
-  max-width: 780px;
+  max-width: 660px;
   margin: 0 auto;
   display: flex;
   align-items: center;
@@ -33,18 +35,18 @@ body {
   text-decoration: none;
   color: #111827;
   font-weight: 700;
-  font-size: 18px;
+  font-size: 16px;
 }
 
 .brand-icon {
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   border-radius: 6px;
   background: #0284c7;
   color: #ffffff;
   display: grid;
   place-items: center;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
 }
 
@@ -54,23 +56,34 @@ body {
 }
 
 .container {
-  max-width: 780px;
-  margin: 28px auto 60px;
-  padding: 0 16px;
+  flex: 1;
+  width: 100%;
+  max-width: 460px;
+  margin: 0 auto;
+  padding: 20px 16px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: stretch;
+  transition: max-width 0.2s ease;
+}
+
+.container.is-expanded {
+  max-width: 680px;
 }
 
 .card {
   background: #ffffff;
   border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  padding: 24px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  border-radius: 12px;
+  padding: 18px;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
 }
 
 .dropzone {
   border: 2px dashed #cbd5e1;
   border-radius: 8px;
-  padding: 44px 20px;
+  padding: 28px 16px;
   text-align: center;
   cursor: pointer;
   background: #fafafa;
@@ -84,14 +97,14 @@ body {
 }
 
 .dropzone-title {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
   color: #111827;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .dropzone-sub {
-  font-size: 13px;
+  font-size: 12px;
   color: #6b7280;
 }
 

@@ -12,7 +12,7 @@ if ($name === '' && isset($_SERVER['REQUEST_URI'])) {
     }
 }
 
-if (!preg_match('/^[0-9a-z-]+\.(webp|jpg|png|gif)$/', $name)) {
+if (!preg_match('/^[0-9a-z_-]+\.(webp|jpg|png|gif)$/', $name)) {
     http_response_code(400);
     exit('Invalid image filename');
 }

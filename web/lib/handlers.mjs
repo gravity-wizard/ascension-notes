@@ -116,7 +116,10 @@ export async function handleImageUpload(req, res, store = defaultStore) {
 }
 
 export async function handleGetImageMeta(req, res, slugInput, store = defaultStore) {
-  const cleanSlug = String(slugInput || "").trim().replace(/[^0-9a-z-]/g, "");
+  const cleanSlug = String(slugInput || "")
+    .trim()
+    .replace(/\^/g, "-")
+    .replace(/[^0-9a-z_-]/g, "");
   if (!cleanSlug) {
     return sendJson(res, 400, { ok: false, error: "Invalid image id." });
   }
@@ -143,7 +146,7 @@ export async function handleGetImageMeta(req, res, slugInput, store = defaultSto
 
 export async function handleServeImage(req, res, filenameInput, store = defaultStore) {
   const safeName = String(filenameInput || "").trim().replace(/^\/+/, "");
-  if (!/^[0-9a-z-]+\.(webp|jpg|png|gif)$/.test(safeName)) {
+  if (!/^[0-9a-z_-]+\.(webp|jpg|png|gif)$/.test(safeName)) {
     res.statusCode = 400;
     return res.end("Invalid image filename");
   }

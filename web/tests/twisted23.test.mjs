@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { mintAgyTimeTag, pickUniqueSlug, sanitizeSlug } from "../lib/images.mjs";
+import { decodeAcodeTimestamp, mintAcodeTimeSlug, mintAgyTimeTag, pickUniqueSlug, sanitizeSlug } from "../lib/images.mjs";
 import { createStore } from "../lib/store.mjs";
 import { createAppServer } from "../server.mjs";
 
-test("Slug sanitizer appends exact time ending in -agy for custom and blank names", () => {
+test("Custom names keep -agy; blank input uses Single Peak (___-a8a) or Triple Peak (___-a8a-a8a-a8a)", () => {
   assert.equal(sanitizeSlug("Uncle Norman"), "uncle-norman");
 
   const fixedUnix = 1795385000;
@@ -18,9 +18,35 @@ test("Slug sanitizer appends exact time ending in -agy for custom and blank name
   assert.notEqual(second, first);
   assert.match(second, /^uncle-norman-[0-9a-z]{6}-agy$/);
 
+  // Blank input -> Single Peak or Triple Peak, no 0 or 9 in a8a triads
   const blank = pickUniqueSlug("", {}, fixedUnix);
-  assert.match(blank, /^[0-9a-z]{6}-agy$/);
-  assert.equal(blank.length, 10);
+  assert.match(blank, /^[1-9a-z_]{3}(-[a-z][1-8][a-z]){1,3}$/);
+  assert.equal(decodeAcodeTimestamp(blank), fixedUnix);
+
+  // When a Single Peak second is found, verify both Single Peak and collision -> Triple Peak
+  const TRIAD = 54872;
+  const EPOCH = 1584540571;
+  // lsd "a1a" = 10*1444 + 1*38 + 10 = 14488
+  const singleSec = EPOCH + 3843 * TRIAD + 14488;
+  const singleMinted = mintAcodeTimeSlug(singleSec);
+  assert.equal(singleMinted.mode, "single");
+  assert.equal(singleMinted.canonical, "2p5^a1a");
+  assert.equal(singleMinted.slug, "2p5-a1a");
+  assert.equal(decodeAcodeTimestamp(singleMinted.canonical), singleSec);
+  assert.equal(decodeAcodeTimestamp(singleMinted.slug), singleSec);
+
+  // Collision on Single Peak switches to Triple Peak for the exact same second
+  const tripleAfterCollision = mintAcodeTimeSlug(singleSec, (cand) => cand === "2p5-a1a");
+  assert.equal(tripleAfterCollision.mode, "triple");
+  assert.match(tripleAfterCollision.canonical, /^2p5(\^[a-z][1-8][a-z]){3}$/);
+  assert.equal(decodeAcodeTimestamp(tripleAfterCollision.canonical), singleSec);
+  assert.equal(decodeAcodeTimestamp(tripleAfterCollision.slug), singleSec);
+
+  // First MSD Triad replaces '0' with '_'
+  const zeroMsdSec = EPOCH + (2 * 38 * 38 + 0 * 38 + 5) * TRIAD + 14488;
+  const zeroMsdMinted = mintAcodeTimeSlug(zeroMsdSec);
+  assert.equal(zeroMsdMinted.canonical, "2_5^a1a");
+  assert.equal(decodeAcodeTimestamp("2_5^a1a"), zeroMsdSec);
 
   const tag = mintAgyTimeTag(fixedUnix);
   assert.ok(tag.tag.endsWith("-agy"));
@@ -106,7 +132,7 @@ test("Minimal ImgBB flow: custom/short -agy filenames, 575KB limit, cache header
     });
     assert.equal(notMod.status, 304);
 
-    // Blank customName -> <6chars>-agy.png
+    // Blank customName -> Single Peak (___-a8a) or Triple Peak (___-a8a-a8a-a8a)
     res = await fetch(`${baseUrl}/api/images/upload`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -114,7 +140,8 @@ test("Minimal ImgBB flow: custom/short -agy filenames, 575KB limit, cache header
     });
     assert.equal(res.status, 200);
     body = await res.json();
-    assert.match(body.image.slug, /^[0-9a-z]{6}-agy$/);
+    assert.match(body.image.slug, /^[1-9a-z_]{3}(-[a-z][1-8][a-z]){1,3}$/);
+    assert.ok(decodeAcodeTimestamp(body.image.slug) !== null);
 
     // 3rd upload uses direct binary application/octet-stream -> binary-test-<6chars>-agy.png
     res = await fetch(`${baseUrl}/api/images/upload`, {

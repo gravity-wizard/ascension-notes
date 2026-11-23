@@ -101,6 +101,21 @@ function encode_compact_time(int $n): string {
     return $out;
 }
 
+function decode_compact_time(string $s): ?int {
+    $alpha = '0123456789abcdefghijklmnopqrstuvwxyz|^';
+    $total = 0;
+    $len = strlen($s);
+    for ($i = 0; $i < $len; $i++) {
+        $ch = $s[$i];
+        if ($ch === '_') $ch = '0';
+        elseif ($ch === '-') $ch = '^';
+        $idx = strpos($alpha, $ch);
+        if ($idx === false) return null;
+        $total = $total * 38 + $idx;
+    }
+    return $total;
+}
+
 function is_clean_alnum_tag(string $s): bool {
     if ($s === '' || preg_match('/^[0-9a-z]+$/', $s) !== 1) return false;
     $leet = strtr($s, ['0' => 'o', '1' => 'i', '3' => 'e', '4' => 'a', '5' => 's', '7' => 't', '8' => 'b']);
@@ -111,8 +126,79 @@ function is_clean_alnum_tag(string $s): bool {
     return true;
 }
 
-function pick_unique_slug(string $customName, array $existing): string {
+function is_clean_msd_or_a8a(string $s): bool {
+    $alnum = strtr($s, ['_' => '0', '-' => 'x']);
+    return is_clean_alnum_tag($alnum);
+}
+
+function format_msd_triad(int $msdVal): string {
+    $raw = substr(str_pad(encode_compact_time($msdVal), 3, '0', STR_PAD_LEFT), -3);
+    return strtr($raw, ['0' => '_', '|' => '_', '^' => '-']);
+}
+
+function a8a_from_index(int $idx): string {
+    $count = 5408; // 26 * 8 * 26
+    $i = (($idx % $count) + $count) % $count;
+    $c0 = chr(97 + intdiv($i, 208));
+    $rem = $i % 208;
+    $c1 = chr(49 + intdiv($rem, 26));
+    $c2 = chr(97 + ($rem % 26));
+    return $c0 . $c1 . $c2;
+}
+
+function is_a8a_triad(string $s): bool {
+    return preg_match('/^[a-z][1-8][a-z]$/', $s) === 1;
+}
+
+function mint_acode_time_slug(int $unixSeconds, array $existing): array {
+    $epoch = 1584540571;
+    $triadBase = 54872; // 38^3
+    $a8aCount = 5408;
+    $sec = max($epoch, $unixSeconds);
+    $elapsed = $sec - $epoch;
+    $msdVal = intdiv($elapsed, $triadBase);
+    $lsdVal = $elapsed % $triadBase;
+    $msd = format_msd_triad($msdVal);
+
+    $directLsd = encode_compact_time($lsdVal);
+    if (strlen($directLsd) === 3 && is_a8a_triad($directLsd) && is_clean_alnum_tag($directLsd)) {
+        $canonical = "{$msd}^{$directLsd}";
+        $slug = "{$msd}-{$directLsd}";
+        if (is_clean_msd_or_a8a($msd . $directLsd) && !isset($existing[$slug]) && !isset($existing[$canonical])) {
+            return ['slug' => $slug, 'canonical' => $canonical];
+        }
+    }
+
+    for ($attempt = 0; $attempt < 5000; $attempt++) {
+        $h1 = ((($elapsed ^ 0x9e3779b9) * 2654435761) ^ (($attempt + 1) * 2246822519)) & 0x7fffffff;
+        $h2 = ((($elapsed ^ 0x85ebca6b) * 3266489917) ^ (($attempt + 1) * 668265263)) & 0x7fffffff;
+        $t1 = a8a_from_index($h1 % $a8aCount);
+        $t2 = a8a_from_index($h2 % $a8aCount);
+        if (!is_clean_alnum_tag($t1) || !is_clean_alnum_tag($t2)) continue;
+
+        $v1 = decode_compact_time($t1) ?? 0;
+        $v2 = decode_compact_time($t2) ?? 0;
+        $needed = ((($lsdVal - $msdVal - $v1 - $v2) % $triadBase) + $triadBase) % $triadBase;
+        $t3 = encode_compact_time($needed);
+        if (strlen($t3) !== 3 || !is_a8a_triad($t3) || !is_clean_alnum_tag($t3)) continue;
+        if (!is_clean_msd_or_a8a($msd . $t1 . $t2 . $t3)) continue;
+
+        $canonical = "{$msd}^{$t1}^{$t2}^{$t3}";
+        $slug = "{$msd}-{$t1}-{$t2}-{$t3}";
+        if (!isset($existing[$slug]) && !isset($existing[$canonical])) {
+            return ['slug' => $slug, 'canonical' => $canonical];
+        }
+    }
+
+    $fallback = "{$msd}-a1a-a1a-a1a";
+    return ['slug' => $fallback, 'canonical' => str_replace('-', '^', $fallback)];
+}
+
+function pick_unique_slug(string $customName, array $existing): array {
     $prefix = sanitize_slug($customName);
+    if ($prefix === '') {
+        return mint_acode_time_slug(time(), $existing);
+    }
     $epoch = 1584540571;
     $agyOffset = 10 * 38 * 38 + 16 * 38 + 34; // decode("agy")
     $baseSec = max($epoch, time());
@@ -120,12 +206,11 @@ function pick_unique_slug(string $customName, array $existing): string {
         $elapsed = ($baseSec + $bump) - $epoch;
         $anchor = encode_compact_time($elapsed + $agyOffset);
         if (!is_clean_alnum_tag($anchor)) continue;
-        $tag = "{$anchor}-agy";
-        $cand = $prefix !== '' ? "{$prefix}-{$tag}" : $tag;
-        if (!isset($existing[$cand])) return $cand;
+        $cand = "{$prefix}-{$anchor}-agy";
+        if (!isset($existing[$cand])) return ['slug' => $cand, 'canonical' => null];
     }
     $fb = preg_replace('/[^0-9a-z]/', 'x', encode_compact_time($baseSec - $epoch + $agyOffset)) . '-agy';
-    return $prefix !== '' ? "{$prefix}-{$fb}" : $fb;
+    return ['slug' => "{$prefix}-{$fb}", 'canonical' => null];
 }
 
 function build_snippets(string $root, array $rec): array {
@@ -204,13 +289,14 @@ if ($route === 'images/upload' && $method === 'POST') {
             return ['status' => 429, 'body' => ['ok' => false, 'error' => 'Daily upload limit reached. Try again tomorrow.']];
         }
 
-        $slug = pick_unique_slug($customName, $state['imagesBySlug']);
+        $minted = pick_unique_slug($customName, $state['imagesBySlug']);
+        $slug = $minted['slug'];
         $storedName = "{$slug}.{$fmt['ext']}";
         $uploadsDir = rtrim($config['data_dir'], '/') . '/uploads';
         if (!is_dir($uploadsDir)) mkdir($uploadsDir, 0755, true);
         file_put_contents($uploadsDir . '/' . $storedName, $bytes);
 
-        $title = substr(trim($customName), 0, 64) ?: $slug;
+        $title = substr(trim($customName), 0, 64) ?: ($minted['canonical'] ?? $slug);
         $rec = [
             'slug' => $slug,
             'storedFilename' => $storedName,
@@ -243,7 +329,7 @@ if ($route === 'images/upload' && $method === 'POST') {
 }
 
 if (str_starts_with($route, 'images/')) {
-    $slug = preg_replace('/[^0-9a-z-]/', '', substr($route, 7));
+    $slug = str_replace('^', '-', preg_replace('/[^0-9a-z_^-]/', '', substr($route, 7)) ?? '');
     $rec = with_store($config, fn(array $state) => $state['imagesBySlug'][$slug] ?? null);
     if (!$rec) json_out(404, ['ok' => false, 'error' => 'Image not found']);
     $rec['snippets'] = build_snippets(base_url_prefix(), $rec);

@@ -42,18 +42,74 @@ function formatKb(bytes) {
   return `${(bytes / 1024).toFixed(1)} KB`;
 }
 
-function buildAgyTimeTag() {
+function encodeCompactVal(n) {
   const alpha = "0123456789abcdefghijklmnopqrstuvwxyz|^";
+  let v = Math.max(0, Math.trunc(n));
+  if (v === 0) return "0";
+  let out = "";
+  while (v > 0) {
+    out = alpha[v % 38] + out;
+    v = Math.floor(v / 38);
+  }
+  return out;
+}
+
+function decodeCompactVal(s) {
+  const alpha = "0123456789abcdefghijklmnopqrstuvwxyz|^";
+  let total = 0;
+  for (const ch of s) {
+    const idx = alpha.indexOf(ch === "_" ? "0" : ch === "-" ? "^" : ch);
+    if (idx < 0) return 0;
+    total = total * 38 + idx;
+  }
+  return total;
+}
+
+function a8aFromIdx(idx) {
+  const count = 5408;
+  const i = ((idx % count) + count) % count;
+  const c0 = String.fromCharCode(97 + Math.floor(i / 208));
+  const rem = i % 208;
+  const c1 = String.fromCharCode(49 + Math.floor(rem / 26));
+  const c2 = String.fromCharCode(97 + (rem % 26));
+  return `${c0}${c1}${c2}`;
+}
+
+function buildAcodeTimeSlug() {
+  const epoch = 1584540571;
+  const triadBase = 54872;
+  const a8aCount = 5408;
+  const sec = Math.max(epoch, Math.floor(Date.now() / 1000));
+  const elapsed = sec - epoch;
+  const msdVal = Math.floor(elapsed / triadBase);
+  const lsdVal = elapsed % triadBase;
+  const msd = encodeCompactVal(msdVal).padStart(3, "0").slice(-3).replace(/0/g, "_").replace(/\|/g, "_").replace(/\^/g, "-");
+
+  const direct = encodeCompactVal(lsdVal);
+  if (/^[a-z][1-8][a-z]$/.test(direct) && !direct.includes("666")) {
+    return `${msd}-${direct}`;
+  }
+
+  for (let attempt = 0; attempt < 5000; attempt++) {
+    const h1 = (Math.imul(elapsed ^ 0x9e3779b9, 2654435761) ^ Math.imul(attempt + 1, 2246822519)) >>> 0;
+    const h2 = (Math.imul(elapsed ^ 0x85ebca6b, 3266489917) ^ Math.imul(attempt + 1, 668265263)) >>> 0;
+    const t1 = a8aFromIdx(h1 % a8aCount);
+    const t2 = a8aFromIdx(h2 % a8aCount);
+    const needed = (((lsdVal - msdVal - decodeCompactVal(t1) - decodeCompactVal(t2)) % triadBase) + triadBase) % triadBase;
+    const t3 = encodeCompactVal(needed);
+    if (/^[a-z][1-8][a-z]$/.test(t3)) {
+      return `${msd}-${t1}-${t2}-${t3}`;
+    }
+  }
+  return `${msd}-a1a-a1a-a1a`;
+}
+
+function buildAgyTimeTag() {
   const epoch = 1584540571;
   const agyOffset = 15082;
   const baseSec = Math.max(epoch, Math.floor(Date.now() / 1000));
   for (let bump = 0; bump < 60; bump++) {
-    let n = (baseSec + bump) - epoch + agyOffset;
-    let out = "";
-    while (n > 0) {
-      out = alpha[n % 38] + out;
-      n = Math.floor(n / 38);
-    }
+    const out = encodeCompactVal((baseSec + bump) - epoch + agyOffset);
     if (/^[0-9a-z]+$/.test(out) && !out.includes("666")) {
       return `${out}-agy`;
     }
@@ -69,8 +125,10 @@ function sanitizeLocalFilename(raw, ext) {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 40);
-  const tag = buildAgyTimeTag();
-  return `${clean ? `${clean}-` : ""}${tag}.${ext}`;
+  if (!clean) {
+    return `${buildAcodeTimeSlug()}.${ext}`;
+  }
+  return `${clean}-${buildAgyTimeTag()}.${ext}`;
 }
 
 async function fetchConfig() {
@@ -194,6 +252,7 @@ btnClear.addEventListener("click", () => {
   customNameInput.value = "";
   stagingArea.classList.add("hidden");
   uploadStatus.textContent = "";
+  document.querySelector(".container")?.classList.remove("is-expanded");
 });
 
 btnSaveLocal.addEventListener("click", async () => {
@@ -203,7 +262,7 @@ btnSaveLocal.addEventListener("click", async () => {
     const prepared = await prepareBytesForUpload();
     const a = document.createElement("a");
     a.href = prepared.dataUrl;
-    a.download = sanitizeLocalFilename(customNameInput.value || stagedFile.originalName.replace(/\.[^.]+$/, ""), prepared.ext);
+    a.download = sanitizeLocalFilename(customNameInput.value.trim(), prepared.ext);
     a.click();
     uploadStatus.textContent = `Saved locally (${formatKb(prepared.bytes)}).`;
     uploadStatus.className = "status-line";
@@ -269,6 +328,7 @@ document.getElementById("btn-upload-another").addEventListener("click", () => {
   stagingArea.classList.add("hidden");
   resultsCard.classList.add("hidden");
   uploadCard.classList.remove("hidden");
+  document.querySelector(".container")?.classList.remove("is-expanded");
   const url = new URL(window.location.href);
   url.searchParams.delete("img");
   window.history.replaceState({}, "", url.toString());

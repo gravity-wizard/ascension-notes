@@ -5,6 +5,8 @@ export const DEFAULT_IP_DAILY_QUOTA = Number(process.env.TWISTED23_IP_DAILY_QUOT
 
 const TIME_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz|^";
 const TIME_BASE = 38;
+const TRIAD_BASE = TIME_BASE * TIME_BASE * TIME_BASE; // 54872
+const A8A_COUNT = 26 * 8 * 26; // 5408
 const TIME_EPOCH = 1584540571;
 const AGY_OFFSET_VAL = 10 * TIME_BASE * TIME_BASE + 16 * TIME_BASE + 34; // decode("agy") = 15082
 const BLOCKED_PARTS = ["666", "anal", "anus", "arse", "bitch", "btch", "cock", "c0ck", "cunt", "damn", "dick", "d1ck", "dyke", "fag", "fck", "fuk", "fuck", "hell", "jizz", "kike", "klan", "nazi", "nig", "n1g", "porn", "p0rn", "puss", "rape", "shit", "sh1t", "slut", "spic", "twat", "wank", "whor", "xxx"];
@@ -30,10 +32,107 @@ function encodeCompactTime(value) {
   return out;
 }
 
+function decodeCompactTime(str) {
+  let total = 0;
+  for (const ch of String(str || "")) {
+    const normalized = ch === "_" ? "0" : ch === "-" ? "^" : ch;
+    const idx = TIME_ALPHABET.indexOf(normalized);
+    if (idx < 0) return null;
+    total = total * TIME_BASE + idx;
+  }
+  return total;
+}
+
 function isCleanAlnumTag(s) {
   if (!/^[0-9a-z]+$/.test(s)) return false;
   const leet = s.replace(/[0134578]/g, (c) => ({ 0: "o", 1: "i", 3: "e", 4: "a", 5: "s", 7: "t", 8: "b" }[c]));
   return !BLOCKED_PARTS.some((b) => s.includes(b) || leet.includes(b));
+}
+
+function isCleanMsdOrA8a(s) {
+  const alnum = s.replace(/_/g, "0").replace(/-/g, "x");
+  const leet = alnum.replace(/[0134578]/g, (c) => ({ 0: "o", 1: "i", 3: "e", 4: "a", 5: "s", 7: "t", 8: "b" }[c]));
+  return !BLOCKED_PARTS.some((b) => alnum.includes(b) || leet.includes(b));
+}
+
+function formatMsdTriad(msdVal) {
+  const raw = encodeCompactTime(msdVal).padStart(3, "0").slice(-3);
+  return raw.replace(/0/g, "_").replace(/\|/g, "_").replace(/\^/g, "-");
+}
+
+function a8aFromIndex(idx) {
+  const i = ((idx % A8A_COUNT) + A8A_COUNT) % A8A_COUNT;
+  const c0 = String.fromCharCode(97 + Math.floor(i / 208));
+  const rem = i % 208;
+  const c1 = String.fromCharCode(49 + Math.floor(rem / 26));
+  const c2 = String.fromCharCode(97 + (rem % 26));
+  return `${c0}${c1}${c2}`;
+}
+
+export function isA8aTriad(s) {
+  return /^[a-z][1-8][a-z]$/.test(String(s || ""));
+}
+
+export function mintAcodeTimeSlug(unixSeconds = Math.floor(Date.now() / 1000), isTakenFn = () => false) {
+  const sec = Math.max(TIME_EPOCH, Math.trunc(unixSeconds));
+  const elapsed = sec - TIME_EPOCH;
+  const msdVal = Math.floor(elapsed / TRIAD_BASE);
+  const lsdVal = elapsed % TRIAD_BASE;
+  const msd = formatMsdTriad(msdVal);
+
+  // 1. Single Peak: ___^a8a (URL-safe: ___-a8a) when LSD triad is naturally a8a and clean/free
+  const directLsd = encodeCompactTime(lsdVal);
+  if (directLsd.length === 3 && isA8aTriad(directLsd) && isCleanAlnumTag(directLsd)) {
+    const canonical = `${msd}^${directLsd}`;
+    const slug = `${msd}-${directLsd}`;
+    if (isCleanMsdOrA8a(msd + directLsd) && !isTakenFn(slug) && !isTakenFn(canonical)) {
+      return { slug, canonical, mode: "single", unixSeconds: sec };
+    }
+  }
+
+  // 2. Triple Peak: ___^a8a^a8a^a8a (URL-safe: ___-a8a-a8a-a8a)
+  // Exact math: (v(t1) + v(t2) + v(t3) + msdVal) % 54872 === lsdVal
+  for (let attempt = 0; attempt < 5000; attempt++) {
+    const h1 = (Math.imul(elapsed ^ 0x9e3779b9, 2654435761) ^ Math.imul(attempt + 1, 2246822519)) >>> 0;
+    const h2 = (Math.imul(elapsed ^ 0x85ebca6b, 3266489917) ^ Math.imul(attempt + 1, 668265263)) >>> 0;
+    const t1 = a8aFromIndex(h1 % A8A_COUNT);
+    const t2 = a8aFromIndex(h2 % A8A_COUNT);
+    if (!isCleanAlnumTag(t1) || !isCleanAlnumTag(t2)) continue;
+
+    const v1 = decodeCompactTime(t1);
+    const v2 = decodeCompactTime(t2);
+    const needed = (((lsdVal - msdVal - v1 - v2) % TRIAD_BASE) + TRIAD_BASE) % TRIAD_BASE;
+    const t3 = encodeCompactTime(needed);
+    if (t3.length !== 3 || !isA8aTriad(t3) || !isCleanAlnumTag(t3)) continue;
+    if (!isCleanMsdOrA8a(`${msd}${t1}${t2}${t3}`)) continue;
+
+    const canonical = `${msd}^${t1}^${t2}^${t3}`;
+    const slug = `${msd}-${t1}-${t2}-${t3}`;
+    if (!isTakenFn(slug) && !isTakenFn(canonical)) {
+      return { slug, canonical, mode: "triple", unixSeconds: sec };
+    }
+  }
+
+  const fallback = `${msd}-a1a-a1a-a1a`;
+  return { slug: fallback, canonical: fallback.replace(/-/g, "^"), mode: "triple", unixSeconds: sec };
+}
+
+export function decodeAcodeTimestamp(code) {
+  const parts = String(code || "").trim().split(/[\^-]/);
+  if (parts.length !== 2 && parts.length !== 4) return null;
+  const [msd, ...peaks] = parts;
+  if (msd.length !== 3 || !peaks.every((p) => isA8aTriad(p))) return null;
+  const msdVal = decodeCompactTime(msd);
+  if (msdVal === null) return null;
+
+  let lsdVal;
+  if (peaks.length === 1) {
+    lsdVal = decodeCompactTime(peaks[0]);
+  } else {
+    const sum = peaks.reduce((acc, p) => acc + decodeCompactTime(p), 0);
+    lsdVal = (sum + msdVal) % TRIAD_BASE;
+  }
+  return TIME_EPOCH + msdVal * TRIAD_BASE + lsdVal;
 }
 
 export function mintAgyTimeTag(unixSeconds = Math.floor(Date.now() / 1000), isTakenFn = () => false, customPrefix = "") {
@@ -85,6 +184,9 @@ export function sanitizeSlug(raw) {
 
 export function pickUniqueSlug(customName, existingImages = {}, unixSeconds = Math.floor(Date.now() / 1000)) {
   const prefix = sanitizeSlug(customName);
+  if (!prefix) {
+    return mintAcodeTimeSlug(unixSeconds, (cand) => Boolean(existingImages[cand])).slug;
+  }
   return mintAgyTimeTag(unixSeconds, (cand) => Boolean(existingImages[cand]), prefix).slug;
 }
 
@@ -139,9 +241,18 @@ export function buildImageRecord({
     throw err;
   }
 
-  const slug = pickUniqueSlug(customName, existingImages, unixSeconds);
+  const prefix = sanitizeSlug(customName);
+  let slug;
+  let canonicalCode = null;
+  if (!prefix) {
+    const minted = mintAcodeTimeSlug(unixSeconds, (cand) => Boolean(existingImages[cand]));
+    slug = minted.slug;
+    canonicalCode = minted.canonical;
+  } else {
+    slug = mintAgyTimeTag(unixSeconds, (cand) => Boolean(existingImages[cand]), prefix).slug;
+  }
   const storedFilename = `${slug}.${fmt.ext}`;
-  const title = String(customName || "").trim().slice(0, 64) || slug;
+  const title = String(customName || "").trim().slice(0, 64) || canonicalCode || slug;
   const etag = `"${crypto.createHash("sha256").update(buffer).digest("hex").slice(0, 16)}"`;
 
   const snippets = buildHostedImageSnippets({
