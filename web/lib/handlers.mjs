@@ -116,8 +116,14 @@ export async function handleImageUpload(req, res, store = defaultStore) {
 }
 
 export async function handleGetImageMeta(req, res, slugInput, store = defaultStore) {
-  const cleanSlug = String(slugInput || "")
-    .trim()
+  let rawSlug = String(slugInput || "").trim();
+  try {
+    rawSlug = decodeURIComponent(rawSlug);
+  } catch {
+    // Keep rawSlug if percent-encoding is malformed
+  }
+  const cleanSlug = rawSlug
+    .toLowerCase()
     .replace(/\^/g, "-")
     .replace(/[^0-9a-z_-]/g, "");
   if (!cleanSlug) {

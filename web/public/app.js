@@ -118,17 +118,22 @@ function buildAcodeTimeSlug() {
   return `${msd}-a1a-a1a-a1a`;
 }
 
-function buildAgyTimeTag() {
+function buildAgyTimeTag(cleanPrefix = "") {
   const epoch = 1584540571;
   const agyOffset = 15082;
   const baseSec = Math.max(epoch, Math.floor(Date.now() / 1000));
-  for (let bump = 0; bump < 60; bump++) {
-    const out = encodeCompactVal((baseSec + bump) - epoch + agyOffset);
-    if (/^[0-9a-z]+$/.test(out) && isCleanAcodeSeq(out)) {
-      return `${out}-agy`;
+  if (!cleanPrefix || isCleanAcodeSeq(cleanPrefix)) {
+    for (let bump = 0; bump < 90; bump++) {
+      const out = encodeCompactVal((baseSec + bump) - epoch + agyOffset);
+      if (/^[0-9a-z]+$/.test(out) && isCleanAcodeSeq(out)) {
+        const candidate = cleanPrefix ? `${cleanPrefix}-${out}-agy` : `${out}-agy`;
+        if (isCleanAcodeSeq(candidate)) {
+          return `${out}-agy`;
+        }
+      }
     }
   }
-  return "now-agy";
+  return null;
 }
 
 function sanitizeLocalFilename(raw, ext) {
@@ -142,7 +147,11 @@ function sanitizeLocalFilename(raw, ext) {
   if (!clean) {
     return `${buildAcodeTimeSlug()}.${ext}`;
   }
-  return `${clean}-${buildAgyTimeTag()}.${ext}`;
+  const tag = buildAgyTimeTag(clean);
+  if (!tag) {
+    return `${buildAcodeTimeSlug()}.${ext}`;
+  }
+  return `${clean}-${tag}.${ext}`;
 }
 
 async function fetchConfig() {
@@ -380,7 +389,7 @@ document.querySelectorAll(".copy-btn").forEach((btn) => {
 async function loadExistingIfQueryParam() {
   const raw = new URLSearchParams(window.location.search).get("img");
   if (!raw) return;
-  const slug = raw.split("]")[0].trim().replace(/\^/g, "-").replace(/[^0-9a-z_-]/g, "");
+  const slug = raw.split("]")[0].trim().toLowerCase().replace(/\^/g, "-").replace(/[^0-9a-z_-]/g, "");
   if (!slug) return;
   try {
     const res = await fetch(apiEndpoint(`images/${encodeURIComponent(slug)}`));

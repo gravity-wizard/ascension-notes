@@ -132,19 +132,12 @@ function is_clean_acode_sequence(string $rawCode): bool {
     $digitsOnly = preg_replace('/[a-z]/', '', $joined) ?? '';
     $leetI = strtr($joined, ['0' => 'o', '1' => 'i', '3' => 'e', '4' => 'a', '5' => 's', '7' => 't', '8' => 'b', '9' => 'g']);
     $leetL = strtr($joined, ['0' => 'o', '1' => 'l', '3' => 'e', '4' => 'a', '5' => 's', '7' => 't', '8' => 'b', '9' => 'g']);
-    $blocked = ['69', '666', 'anal', 'anus', 'arse', 'bitch', 'btch', 'cock', 'c0ck', 'cunt', 'damn', 'dick', 'd1ck', 'dyke', 'fag', 'fck', 'fuk', 'fuck', 'hell', 'jizz', 'kike', 'klan', 'nazi', 'nig', 'n1g', 'porn', 'p0rn', 'puss', 'rape', 'shit', 'sh1t', 'slut', 'spic', 'twat', 'wank', 'whor', 'xxx'];
-    foreach ($blocked as $b) {
-        if (
-            str_contains($joined, $b) ||
-            str_contains($lettersOnly, $b) ||
-            str_contains($digitsOnly, $b) ||
-            str_contains($leetI, $b) ||
-            str_contains($leetL, $b)
-        ) {
-            return false;
-        }
-    }
-    return true;
+    $re = '/69|666|anal|anus|arse|bitch|btch|cock|c0ck|cunt|damn|dick|d1ck|dyke|fag|fck|fuk|fuck|hell|jizz|kike|klan|nazi|nig|n1g|porn|p0rn|puss|rape|shit|sh1t|slut|spic|twat|wank|whor|xxx/';
+    return preg_match($re, $joined) !== 1
+        && preg_match($re, $lettersOnly) !== 1
+        && preg_match('/69|666/', $digitsOnly) !== 1
+        && preg_match($re, $leetI) !== 1
+        && preg_match($re, $leetL) !== 1;
 }
 
 function format_msd_triad(int $msdVal): string {
@@ -168,52 +161,116 @@ function is_a8a_triad(string $s): bool {
 }
 
 function mint_acode_time_slug(int $unixSeconds, array $existing): array {
+    static $a8aTriads = null;
+    static $a8aVals = null;
+    static $a8aClean = null;
+    static $neededToCleanA8a = null;
+    if ($a8aTriads === null) {
+        $a8aTriads = [];
+        $a8aVals = [];
+        $a8aClean = [];
+        $neededToCleanA8a = [];
+        for ($i = 0; $i < 5408; $i++) {
+            $t = a8a_from_index($i);
+            $val = decode_compact_time($t) ?? 0;
+            $clean = is_clean_acode_sequence($t);
+            $a8aTriads[$i] = $t;
+            $a8aVals[$i] = $val;
+            $a8aClean[$i] = $clean;
+            if ($clean) {
+                $neededToCleanA8a[$val] = $i;
+            }
+        }
+    }
+
     $epoch = 1584540571;
     $triadBase = 54872; // 38^3
     $a8aCount = 5408;
-    $sec = max($epoch, $unixSeconds);
-    $elapsed = $sec - $epoch;
-    $msdVal = intdiv($elapsed, $triadBase);
-    $lsdVal = $elapsed % $triadBase;
-    $msd = format_msd_triad($msdVal);
+    $baseSec = max($epoch, $unixSeconds);
+    $sec = $baseSec;
+    $msdSkips = 0;
+    $lastMsdVal = -1;
+    $msd = '';
+    $msdClean = false;
 
-    $directLsd = encode_compact_time($lsdVal);
-    if (strlen($directLsd) === 3 && is_a8a_triad($directLsd)) {
-        $canonical = "{$msd}^{$directLsd}";
-        $slug = "{$msd}-{$directLsd}";
-        if (is_clean_acode_sequence($canonical) && !isset($existing[$slug]) && !isset($existing[$canonical])) {
-            return ['slug' => $slug, 'canonical' => $canonical];
+    for ($step = 0; $step < 2000; ) {
+        $elapsed = $sec - $epoch;
+        $msdVal = intdiv($elapsed, $triadBase);
+        $lsdVal = $elapsed % $triadBase;
+        if ($msdVal !== $lastMsdVal) {
+            $lastMsdVal = $msdVal;
+            $msd = format_msd_triad($msdVal);
+            $msdNorm = str_replace('_', '0', $msd);
+            $msdClean = is_clean_acode_sequence($msdNorm);
         }
+
+        if (!$msdClean) {
+            if ($msdSkips >= 64) break;
+            $msdSkips++;
+            $sec = $epoch + ($msdVal + 1) * $triadBase;
+            continue;
+        }
+
+        $ld0 = intdiv($lsdVal, 1444);
+        if ($ld0 >= 10 && $ld0 <= 35) {
+            $lrem = $lsdVal - $ld0 * 1444;
+            $ld1 = intdiv($lrem, 38);
+            if (($ld1 >= 1 && $ld1 <= 5) || ($ld1 >= 7 && $ld1 <= 9)) {
+                $ld2 = $lrem - $ld1 * 38;
+                if ($ld2 >= 10 && $ld2 <= 35) {
+                    $directLsd = encode_compact_time($lsdVal);
+                    $canonical = "{$msd}^{$directLsd}";
+                    $slug = "{$msd}-{$directLsd}";
+                    if (is_clean_acode_sequence($canonical) && !isset($existing[$slug]) && !isset($existing[$canonical])) {
+                        return ['slug' => $slug, 'canonical' => $canonical];
+                    }
+                }
+            }
+        }
+
+        $diff = ($lsdVal - $msdVal + $triadBase) % $triadBase;
+        $c1 = intdiv($diff % 1444, 38);
+        if ($c1 >= 3 && $c1 <= 29) {
+            $e1 = ($elapsed ^ 0x9e3779b9) * 2654435761;
+            $e2 = ($elapsed ^ 0x85ebca6b) * 3266489917;
+            $baseDiff = $lsdVal - $msdVal;
+
+            for ($attempt = 0; $attempt < 5000; $attempt++) {
+                $attempt1 = $attempt + 1;
+                $h1 = ($e1 ^ ($attempt1 * 2246822519)) & 0x7fffffff;
+                $h2 = ($e2 ^ ($attempt1 * 668265263)) & 0x7fffffff;
+                $idx1 = $h1 % $a8aCount;
+                $idx2 = $h2 % $a8aCount;
+
+                $needed = ($baseDiff - $a8aVals[$idx1] - $a8aVals[$idx2]) % $triadBase;
+                if ($needed < 0) $needed += $triadBase;
+
+                $idx3 = $neededToCleanA8a[$needed] ?? -1;
+                if ($idx3 < 0) continue;
+                if (!$a8aClean[$idx1] || !$a8aClean[$idx2]) continue;
+
+                $t1 = $a8aTriads[$idx1];
+                $t2 = $a8aTriads[$idx2];
+                $t3 = $a8aTriads[$idx3];
+                $canonical = "{$msd}^{$t1}^{$t2}^{$t3}";
+                if (!is_clean_acode_sequence($canonical)) continue;
+                $slug = "{$msd}-{$t1}-{$t2}-{$t3}";
+                if (!isset($existing[$slug]) && !isset($existing[$canonical])) {
+                    return ['slug' => $slug, 'canonical' => $canonical];
+                }
+            }
+        }
+
+        $step++;
+        $sec++;
     }
 
-    for ($attempt = 0; $attempt < 5000; $attempt++) {
-        $h1 = ((($elapsed ^ 0x9e3779b9) * 2654435761) ^ (($attempt + 1) * 2246822519)) & 0x7fffffff;
-        $h2 = ((($elapsed ^ 0x85ebca6b) * 3266489917) ^ (($attempt + 1) * 668265263)) & 0x7fffffff;
-        $t1 = a8a_from_index($h1 % $a8aCount);
-        $t2 = a8a_from_index($h2 % $a8aCount);
-        if (!is_clean_acode_sequence($t1) || !is_clean_acode_sequence($t2)) continue;
-
-        $v1 = decode_compact_time($t1) ?? 0;
-        $v2 = decode_compact_time($t2) ?? 0;
-        $needed = ((($lsdVal - $msdVal - $v1 - $v2) % $triadBase) + $triadBase) % $triadBase;
-        $t3 = encode_compact_time($needed);
-        if (strlen($t3) !== 3 || !is_a8a_triad($t3)) continue;
-
-        $canonical = "{$msd}^{$t1}^{$t2}^{$t3}";
-        $slug = "{$msd}-{$t1}-{$t2}-{$t3}";
-        if (!is_clean_acode_sequence($canonical)) continue;
-        if (!isset($existing[$slug]) && !isset($existing[$canonical])) {
-            return ['slug' => $slug, 'canonical' => $canonical];
-        }
-    }
-
-    $fallback = "{$msd}-a1a-a1a-a1a";
-    return ['slug' => $fallback, 'canonical' => str_replace('-', '^', $fallback)];
+    throw new RuntimeException('Unable to mint unique acode time slug.');
 }
 
 function pick_unique_slug(string $customName, array $existing): array {
     $prefix = sanitize_slug($customName);
-    if ($prefix === '') {
+    if ($prefix === '' || !is_clean_acode_sequence($prefix)) {
         return mint_acode_time_slug(time(), $existing);
     }
     $epoch = 1584540571;
@@ -227,8 +284,7 @@ function pick_unique_slug(string $customName, array $existing): array {
         if (!is_clean_acode_sequence($cand)) continue;
         if (!isset($existing[$cand])) return ['slug' => $cand, 'canonical' => null];
     }
-    $fb = preg_replace('/[^0-9a-z]/', 'x', encode_compact_time($baseSec - $epoch + $agyOffset)) . '-agy';
-    return ['slug' => "{$prefix}-{$fb}", 'canonical' => null];
+    return mint_acode_time_slug($baseSec, $existing);
 }
 
 function build_snippets(string $root, array $rec): array {
@@ -347,7 +403,7 @@ if ($route === 'images/upload' && $method === 'POST') {
 }
 
 if (str_starts_with($route, 'images/')) {
-    $slug = str_replace('^', '-', preg_replace('/[^0-9a-z_^-]/', '', substr($route, 7)) ?? '');
+    $slug = str_replace('^', '-', preg_replace('/[^0-9a-z_^-]/', '', strtolower(trim(rawurldecode(substr($route, 7))))) ?? '');
     $rec = with_store($config, fn(array $state) => $state['imagesBySlug'][$slug] ?? null);
     if (!$rec) json_out(404, ['ok' => false, 'error' => 'Image not found']);
     $rec['snippets'] = build_snippets(base_url_prefix(), $rec);

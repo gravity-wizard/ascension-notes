@@ -184,3 +184,131 @@ test("Minimal ImgBB flow: custom/short -agy filenames, 575KB limit, cache header
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
 });
+
+test("Mixed-case and ^ slug lookup resolves via /api/images/<slug>", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "twisted23-lookup-"));
+  const dbPath = path.join(tmpDir, "store.json");
+  const store = createStore({ filePath: dbPath });
+  const server = createAppServer({ store });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  const tinyPng = Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x53, 0x61, 0x6d, 0x70, 0x6c, 0x65,
+  ]);
+
+  try {
+    const targetSlug = "agy-bug2antsiteam-go-team-go";
+    await store.saveImageBlob(`${targetSlug}.png`, tinyPng);
+    await store.updateState((state) => {
+      state.imagesBySlug[targetSlug] = {
+        slug: targetSlug,
+        storedFilename: `${targetSlug}.png`,
+        ext: "png",
+        mime: "image/png",
+        bytes: tinyPng.length,
+        etag: '"deadbeef"',
+        title: "agy^bug2AnTsiTeam-go-team-go",
+        createdAtIso: new Date().toISOString(),
+      };
+    });
+
+    for (const lookup of ["agy^bug2AnTsiTeam-go-team-go", "agy%5Ebug2AnTsiTeam-go-team-go", "AGY-BUG2ANTSITEAM-GO-TEAM-GO"]) {
+      const res = await fetch(`${baseUrl}/api/images/${lookup}`);
+      assert.equal(res.status, 200, `Expected 200 for lookup ${lookup}`);
+      const body = await res.json();
+      assert.equal(body.ok, true);
+      assert.equal(body.image.slug, targetSlug);
+    }
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("mintAgyTimeTag guards against blocked prefixes, loop exhaustion, and collisions", () => {
+  const fixedUnix = 1795385000;
+
+  for (const blockedPrefix of ["hello", "user69", "xxx-test"]) {
+    const res = mintAgyTimeTag(fixedUnix, () => false, blockedPrefix);
+    assert.equal(isCleanAcodeSequence(res.slug), true, `Expected clean slug for ${blockedPrefix}, got ${res.slug}`);
+    assert.equal(res.slug.startsWith(`${blockedPrefix}-`), false);
+  }
+
+  // When all 90 -agy candidates collide, fallback must avoid collision and remain clean
+  const taken = new Set();
+  const firstFallback = mintAgyTimeTag(fixedUnix, (cand) => cand.endsWith("-agy"), "clean");
+  assert.equal(isCleanAcodeSequence(firstFallback.slug), true);
+  assert.equal(firstFallback.slug.endsWith("-agy"), false);
+  taken.add(firstFallback.slug);
+
+  const secondFallback = mintAgyTimeTag(fixedUnix, (cand) => cand.endsWith("-agy") || taken.has(cand), "clean");
+  assert.notEqual(secondFallback.slug, firstFallback.slug);
+  assert.equal(isCleanAcodeSequence(secondFallback.slug), true);
+});
+
+test("mintAcodeTimeSlug and mintAgyTimeTag step forward cleanly at dead-zone timestamp 1795453749", () => {
+  const deadZoneUnix = 1795453749;
+  const taken = new Set();
+
+  for (let i = 0; i < 5; i++) {
+    const acode = mintAcodeTimeSlug(deadZoneUnix, (cand) => taken.has(cand));
+    assert.equal(isCleanAcodeSequence(acode.slug), true, `Expected clean slug, got ${acode.slug}`);
+    assert.equal(taken.has(acode.slug), false, `Collision on ${acode.slug}`);
+    assert.equal(decodeAcodeTimestamp(acode.slug), acode.unixSeconds);
+    taken.add(acode.slug);
+  }
+
+  const agyTaken = new Set();
+  for (let i = 0; i < 5; i++) {
+    const res = mintAgyTimeTag(deadZoneUnix, (cand) => agyTaken.has(cand), "hello");
+    assert.equal(isCleanAcodeSequence(res.slug), true, `Expected clean slug, got ${res.slug}`);
+    assert.equal(res.slug.startsWith("hello-"), false);
+    assert.equal(agyTaken.has(res.slug), false, `Collision on ${res.slug}`);
+    assert.equal(decodeAcodeTimestamp(res.slug), res.unixSeconds);
+    agyTaken.add(res.slug);
+  }
+});
+
+test("mintAcodeTimeSlug completes c1=30 dead-zone in < 100ms and exhausts cleanly in < 3000ms", () => {
+  const TIME_EPOCH = 1584540571;
+  const TRIAD_BASE = 54872;
+  const msdVal = Math.floor((1795453749 - TIME_EPOCH) / TRIAD_BASE);
+  const c1_30_ts = TIME_EPOCH + msdVal * TRIAD_BASE + ((msdVal + 30 * 38) % TRIAD_BASE);
+
+  const t0 = performance.now();
+  const res = mintAcodeTimeSlug(c1_30_ts, () => false);
+  const c1_30_ms = performance.now() - t0;
+  assert.equal(isCleanAcodeSequence(res.slug), true);
+  assert.equal(decodeAcodeTimestamp(res.slug), res.unixSeconds);
+  assert.ok(c1_30_ms < 100, `Expected c1=30 dead-zone mint in < 100ms, took ${c1_30_ms.toFixed(2)}ms`);
+
+  const t1 = performance.now();
+  assert.throws(() => mintAcodeTimeSlug(1795453749, () => true), /Unable to mint unique acode time slug/);
+  const exhaustMs = performance.now() - t1;
+  assert.ok(exhaustMs < 3000, `Expected exhaustion throw in < 3000ms, took ${exhaustMs.toFixed(2)}ms`);
+});
+
+test("mintAcodeTimeSlug at 1586516851 avoids intra-triad w4n-k8b profanity leak", () => {
+  const res = mintAcodeTimeSlug(1586516851, () => false);
+  assert.notEqual(res.canonical, "___^w4n^k8b^o9k");
+  assert.equal(isCleanAcodeSequence(res.canonical), true, `Expected clean canonical, got ${res.canonical}`);
+  assert.equal(isCleanAcodeSequence(res.slug), true, `Expected clean slug, got ${res.slug}`);
+});
+
+test("mintAcodeTimeSlug skips dirty msd buckets (1676806318 msd=169, 2080794573 msd=69-, 2079331346 consecutive 69*)", () => {
+  for (const ts of [1676806318, 2080794573, 2079331346]) {
+    const res = mintAcodeTimeSlug(ts, () => false);
+    assert.equal(isCleanAcodeSequence(res.canonical), true, `Expected clean canonical for ${ts}, got ${res.canonical}`);
+    assert.equal(isCleanAcodeSequence(res.slug), true, `Expected clean slug for ${ts}, got ${res.slug}`);
+    assert.equal(decodeAcodeTimestamp(res.canonical), res.unixSeconds);
+    assert.ok(res.unixSeconds > ts, `Expected unixSeconds > ${ts}, got ${res.unixSeconds}`);
+  }
+});
+
+
+
+
