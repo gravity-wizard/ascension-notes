@@ -69,19 +69,23 @@ jobs:
             echo "has_cf=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Deploy to Hostinger FrmAnTsiTeam via FTPS
+      - name: Deploy to Hostinger FrmAnTsiTeam via SFTP (port 65002)
         if: steps.cfg.outputs.has_ftp == 'true'
-        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
-        with:
-          server: ${{ secrets.HOSTINGER_FTP_SERVER }}
-          username: ${{ secrets.HOSTINGER_FTP_USERNAME }}
-          password: ${{ secrets.HOSTINGER_FTP_PASSWORD }}
-          protocol: ftps
-          local-dir: web/dist/FrmAnTsiTeam/
-          server-dir: ${{ steps.cfg.outputs.ftp_dir }}
-          exclude: |
-            data/**
-            config.php
+        env:
+          FTP_SERVER: ${{ secrets.HOSTINGER_FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.HOSTINGER_FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.HOSTINGER_FTP_PASSWORD }}
+          TARGET_DIR: ${{ steps.cfg.outputs.ftp_dir }}
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq lftp
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" -p 65002 "sftp://${FTP_SERVER}" -e "
+            set sftp:auto-confirm yes;
+            set net:timeout 20;
+            set net:max-retries 2;
+            mkdir -p ${TARGET_DIR};
+            mirror -R --verbose --no-perms --exclude '^data/' --exclude '^config\.php$' web/dist/FrmAnTsiTeam/ ${TARGET_DIR};
+            bye
+          "
 
       - name: Purge Cloudflare static HTML cache on deploy
         if: steps.cfg.outputs.has_cf == 'true'
