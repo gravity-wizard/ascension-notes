@@ -222,8 +222,9 @@ function pick_unique_slug(string $customName, array $existing): array {
     for ($bump = 0; $bump < 90; $bump++) {
         $elapsed = ($baseSec + $bump) - $epoch;
         $anchor = encode_compact_time($elapsed + $agyOffset);
-        if (!is_clean_alnum_tag($anchor)) continue;
+        if (!is_clean_alnum_tag($anchor) || !is_clean_acode_sequence($anchor)) continue;
         $cand = "{$prefix}-{$anchor}-agy";
+        if (!is_clean_acode_sequence($cand)) continue;
         if (!isset($existing[$cand])) return ['slug' => $cand, 'canonical' => null];
     }
     $fb = preg_replace('/[^0-9a-z]/', 'x', encode_compact_time($baseSec - $epoch + $agyOffset)) . '-agy';

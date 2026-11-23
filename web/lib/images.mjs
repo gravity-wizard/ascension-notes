@@ -155,9 +155,10 @@ export function mintAgyTimeTag(unixSeconds = Math.floor(Date.now() / 1000), isTa
   for (let bump = 0; bump < 90; bump++) {
     const elapsed = (baseSec + bump) - TIME_EPOCH;
     const anchor = encodeCompactTime(elapsed + AGY_OFFSET_VAL);
-    if (!isCleanAlnumTag(anchor)) continue;
+    if (!isCleanAlnumTag(anchor) || !isCleanAcodeSequence(anchor)) continue;
     const tag = `${anchor}-agy`;
     const fullSlug = customPrefix ? `${customPrefix}-${tag}` : tag;
+    if (!isCleanAcodeSequence(fullSlug)) continue;
     if (!isTakenFn(fullSlug)) {
       return { tag, slug: fullSlug, unixSeconds: baseSec + bump };
     }

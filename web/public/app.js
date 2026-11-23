@@ -124,7 +124,7 @@ function buildAgyTimeTag() {
   const baseSec = Math.max(epoch, Math.floor(Date.now() / 1000));
   for (let bump = 0; bump < 60; bump++) {
     const out = encodeCompactVal((baseSec + bump) - epoch + agyOffset);
-    if (/^[0-9a-z]+$/.test(out) && !out.includes("666")) {
+    if (/^[0-9a-z]+$/.test(out) && isCleanAcodeSeq(out)) {
       return `${out}-agy`;
     }
   }
@@ -362,7 +362,9 @@ document.querySelectorAll(".copy-btn").forEach((btn) => {
 });
 
 async function loadExistingIfQueryParam() {
-  const slug = new URLSearchParams(window.location.search).get("img");
+  const raw = new URLSearchParams(window.location.search).get("img");
+  if (!raw) return;
+  const slug = raw.split("]")[0].trim().replace(/\^/g, "-").replace(/[^0-9a-z_-]/g, "");
   if (!slug) return;
   try {
     const res = await fetch(apiEndpoint(`images/${encodeURIComponent(slug)}`));
