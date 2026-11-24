@@ -10,6 +10,8 @@ import {
   buildImageRecord,
   getDailyIpQuota,
   getMaxImageBytes,
+  getNonConformingMaxImageBytes,
+  parseWishWindow,
 } from "./images.mjs";
 import { defaultStore } from "./store.mjs";
 
@@ -24,6 +26,7 @@ export async function handleHealth(req, res) {
     ok: true,
     brand: "Twisted23",
     maxImageBytes: getMaxImageBytes(),
+    nonConformingMaxImageBytes: getNonConformingMaxImageBytes(),
     dailyIpQuota: getDailyIpQuota(),
   });
 }
@@ -69,6 +72,7 @@ export async function handleImageUpload(req, res, store = defaultStore) {
     customName = String(body.customName || body.subject || "");
   }
 
+  const wish = parseWishWindow(customName);
   const ip = getClientIp(req);
   const ipHash = crypto.createHash("sha256").update(String(ip)).digest("hex").slice(0, 12);
   const today = new Date().toISOString().slice(0, 10);
@@ -77,31 +81,40 @@ export async function handleImageUpload(req, res, store = defaultStore) {
 
   const preState = await store.readState();
   const used = preState.dailyUploadsByUserDay[dayKey] || 0;
-  if (used >= quota) {
+  if (used + wish.quotaCost > quota) {
     return sendJson(res, 429, {
       ok: false,
-      error: `Daily upload limit reached (${used}/${quota}). Try again tomorrow or save a compressed copy locally.`,
+      error:
+        !wish.conforming && used + 1 <= quota
+          ? `Non-conforming wish tags require ${wish.quotaCost} quota units (${used}/${quota} used). Enter conforming a8a tags like p1b^f5n or leave blank to use your remaining 1× slot.`
+          : `Daily upload limit reached (${used}/${quota}). Try again tomorrow or save a compressed copy locally.`,
     });
   }
 
-  const record = buildImageRecord({
-    buffer,
-    customName,
-    existingImages: preState.imagesBySlug || {},
-    clientIp: ip,
-    origin: requestOrigin(req),
-  });
+  let record;
+  try {
+    record = buildImageRecord({
+      buffer,
+      customName,
+      existingImages: preState.imagesBySlug || {},
+      clientIp: ip,
+      origin: requestOrigin(req),
+    });
+  } catch (err) {
+    return sendJson(res, err.statusCode || 400, { ok: false, error: err.message });
+  }
 
   await store.saveImageBlob(record.storedFilename, buffer);
 
   const quotaAfter = await store.updateState((state) => {
     state.imagesBySlug[record.slug] = record;
-    state.dailyUploadsByUserDay[dayKey] = (state.dailyUploadsByUserDay[dayKey] || 0) + 1;
+    state.dailyUploadsByUserDay[dayKey] = (state.dailyUploadsByUserDay[dayKey] || 0) + wish.quotaCost;
     const nowUsed = state.dailyUploadsByUserDay[dayKey];
     return {
       dailyQuota: quota,
       dailyUsed: nowUsed,
       dailyRemaining: Math.max(0, quota - nowUsed),
+      quotaCost: wish.quotaCost,
     };
   });
 
@@ -109,7 +122,7 @@ export async function handleImageUpload(req, res, store = defaultStore) {
     ok: true,
     image: record,
     hosting: {
-      maxImageBytes: maxBytes,
+      maxImageBytes: wish.maxBytes,
       ...quotaAfter,
     },
   });
@@ -124,6 +137,7 @@ export async function handleGetImageMeta(req, res, slugInput, store = defaultSto
   }
   const cleanSlug = rawSlug
     .toLowerCase()
+    .replace(/\|/g, "_")
     .replace(/\^/g, "-")
     .replace(/[^0-9a-z_-]/g, "");
   if (!cleanSlug) {

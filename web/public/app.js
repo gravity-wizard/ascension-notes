@@ -1,14 +1,23 @@
 import { compressDataUrlToBudget } from "./compressor.js";
 
 let maxImageBytes = 575 * 1024;
+let nonConformingMaxBytes = 385 * 1024;
 let stagedFile = null; // { file, dataUrl, originalName, originalBytes, mime }
 let usePhpRouteFallback = false;
+
+const WISH_TRIAD_ALIASES = {
+  pi1browser: "p1b",
+  pibrowser: "p1b",
+  full5screen: "f5n",
+  fullscreen: "f5n",
+};
 
 const dropzone = document.getElementById("dropzone");
 const fileInput = document.getElementById("file-input");
 const stagingArea = document.getElementById("staging-area");
 const stagedImg = document.getElementById("staged-img");
 const customNameInput = document.getElementById("custom-name");
+const wishHint = document.getElementById("wish-hint");
 const stagingMeta = document.getElementById("staging-meta");
 const uploadStatus = document.getElementById("upload-status");
 const btnUpload = document.getElementById("btn-upload");
@@ -65,6 +74,17 @@ function decodeCompactVal(s) {
   return total;
 }
 
+function decodePeakVal(s) {
+  const alpha = "0123456789abcdefghijklmnopqrstuvwxyz|^";
+  let total = 0;
+  for (const ch of s) {
+    const idx = alpha.indexOf(ch === "_" ? "|" : ch === "-" ? "^" : ch);
+    if (idx < 0) return 0;
+    total = total * 38 + idx;
+  }
+  return total;
+}
+
 function a8aFromIdx(idx) {
   const digits = "12345789";
   const count = 5408;
@@ -76,9 +96,13 @@ function a8aFromIdx(idx) {
   return `${c0}${c1}${c2}`;
 }
 
+function isA8aTriad(s) {
+  return /^[a-z][1-57-9][a-z]$/.test(String(s || ""));
+}
+
 function isCleanAcodeSeq(rawCode) {
   const blocked = ["69", "666", "anal", "anus", "arse", "bitch", "btch", "cock", "c0ck", "cunt", "damn", "dick", "d1ck", "dyke", "fag", "fck", "fuk", "fuck", "hell", "jizz", "kike", "klan", "nazi", "nig", "n1g", "porn", "p0rn", "puss", "rape", "shit", "sh1t", "slut", "spic", "twat", "wank", "whor", "xxx"];
-  const joined = String(rawCode || "").toLowerCase().replace(/[\^-]/g, "").replace(/_/g, "0");
+  const joined = String(rawCode || "").toLowerCase().replace(/[|\^-]/g, "").replace(/_/g, "0");
   const lettersOnly = joined.replace(/[0-9]/g, "");
   const digitsOnly = joined.replace(/[a-z]/g, "");
   const leetI = joined.replace(/[01345789]/g, (c) => ({ 0: "o", 1: "i", 3: "e", 4: "a", 5: "s", 7: "t", 8: "b", 9: "g" }[c]));
@@ -86,6 +110,24 @@ function isCleanAcodeSeq(rawCode) {
   return !blocked.some(
     (b) => joined.includes(b) || lettersOnly.includes(b) || digitsOnly.includes(b) || leetI.includes(b) || leetL.includes(b)
   );
+}
+
+function parseWishInput(raw) {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) {
+    return { kind: "blank", conforming: true, triads: [], canonicalWish: "" };
+  }
+  const tokens = trimmed.toLowerCase().split(/[\s^\/-]+/).filter(Boolean);
+  if (tokens.length >= 1 && tokens.length <= 2) {
+    const mapped = tokens.map((t) => WISH_TRIAD_ALIASES[t] || t);
+    if (mapped.every((t) => isA8aTriad(t) && isCleanAcodeSeq(t))) {
+      const canonicalWish = mapped.join("^");
+      if (isCleanAcodeSeq(canonicalWish)) {
+        return { kind: "conforming", conforming: true, triads: mapped, canonicalWish };
+      }
+    }
+  }
+  return { kind: "nonconforming", conforming: false, triads: [], canonicalWish: "" };
 }
 
 function buildAcodeTimeSlug() {
@@ -99,7 +141,7 @@ function buildAcodeTimeSlug() {
   const msd = encodeCompactVal(msdVal).padStart(3, "0").slice(-3).replace(/0/g, "_").replace(/\|/g, "_").replace(/\^/g, "-");
 
   const direct = encodeCompactVal(lsdVal);
-  if (/^[a-z][1-57-9][a-z]$/.test(direct) && isCleanAcodeSeq(`${msd}-${direct}`)) {
+  if (isA8aTriad(direct) && isCleanAcodeSeq(`${msd}-${direct}`)) {
     return `${msd}-${direct}`;
   }
 
@@ -109,13 +151,54 @@ function buildAcodeTimeSlug() {
     const t1 = a8aFromIdx(h1 % a8aCount);
     const t2 = a8aFromIdx(h2 % a8aCount);
     if (!isCleanAcodeSeq(t1) || !isCleanAcodeSeq(t2)) continue;
-    const needed = (((lsdVal - msdVal - decodeCompactVal(t1) - decodeCompactVal(t2)) % triadBase) + triadBase) % triadBase;
+    const needed = (((lsdVal - msdVal - decodePeakVal(t1) - decodePeakVal(t2)) % triadBase) + triadBase) % triadBase;
     const t3 = encodeCompactVal(needed);
-    if (/^[a-z][1-57-9][a-z]$/.test(t3) && isCleanAcodeSeq(`${msd}-${t1}-${t2}-${t3}`)) {
+    if (isA8aTriad(t3) && isCleanAcodeSeq(`${msd}-${t1}-${t2}-${t3}`)) {
       return `${msd}-${t1}-${t2}-${t3}`;
     }
   }
   return `${msd}-a1a-a1a-a1a`;
+}
+
+function buildConforming3PeaksSlug(triads) {
+  const epoch = 1584540571;
+  const triadBase = 54872;
+  const a8aCount = 5408;
+  let sec = Math.max(epoch, Math.floor(Date.now() / 1000));
+  const t1 = triads[0];
+  const v1 = decodePeakVal(t1);
+
+  for (let step = 0; step < 200; step++, sec++) {
+    const elapsed = sec - epoch;
+    const msdVal = Math.floor(elapsed / triadBase);
+    const lsdVal = elapsed % triadBase;
+    const msd = encodeCompactVal(msdVal).padStart(3, "0").slice(-3).replace(/0/g, "_").replace(/\|/g, "_").replace(/\^/g, "-");
+    if (!isCleanAcodeSeq(msd.replace(/_/g, "0"))) continue;
+
+    if (triads.length === 2) {
+      const t2 = triads[1];
+      const v2 = decodePeakVal(t2);
+      const needed = (((lsdVal - msdVal - v1 - v2) % triadBase) + triadBase) % triadBase;
+      const s3Canon = encodeCompactVal(needed).padStart(3, "0").slice(-3);
+      const s3Url = s3Canon.replace(/\|/g, "_").replace(/\^/g, "-");
+      const canon = `${msd}^${t1}^${t2}^${s3Canon}`;
+      const slug = `${msd}-${t1}-${t2}-${s3Url}`;
+      if (isCleanAcodeSeq(canon) && isCleanAcodeSeq(slug)) return slug;
+    } else {
+      const rem = (((lsdVal - msdVal - v1) % triadBase) + triadBase) % triadBase;
+      for (let attempt = 0; attempt < 300; attempt++) {
+        const t2 = a8aFromIdx((elapsed + attempt * 37) % a8aCount);
+        if (!isCleanAcodeSeq(t2)) continue;
+        const needed = (((rem - decodePeakVal(t2)) % triadBase) + triadBase) % triadBase;
+        const s3Canon = encodeCompactVal(needed).padStart(3, "0").slice(-3);
+        const s3Url = s3Canon.replace(/\|/g, "_").replace(/\^/g, "-");
+        const canon = `${msd}^${t1}^${t2}^${s3Canon}`;
+        const slug = `${msd}-${t1}-${t2}-${s3Url}`;
+        if (isCleanAcodeSeq(canon) && isCleanAcodeSeq(slug)) return slug;
+      }
+    }
+  }
+  return buildAcodeTimeSlug();
 }
 
 function buildAgyTimeTag(cleanPrefix = "") {
@@ -137,6 +220,13 @@ function buildAgyTimeTag(cleanPrefix = "") {
 }
 
 function sanitizeLocalFilename(raw, ext) {
+  const wish = parseWishInput(raw);
+  if (wish.kind === "blank") {
+    return `${buildAcodeTimeSlug()}.${ext}`;
+  }
+  if (wish.kind === "conforming") {
+    return `${buildConforming3PeaksSlug(wish.triads)}.${ext}`;
+  }
   const clean = String(raw || "")
     .trim()
     .toLowerCase()
@@ -154,6 +244,32 @@ function sanitizeLocalFilename(raw, ext) {
   return `${clean}-${tag}.${ext}`;
 }
 
+function updateWishHint() {
+  if (!wishHint) return;
+  const wish = parseWishInput(customNameInput?.value || "");
+  const maxKb = Math.round(maxImageBytes / 1024);
+  const nonConfKb = Math.round(nonConformingMaxBytes / 1024);
+  const presetEl = document.getElementById("size-preset");
+  const opt575 = presetEl?.querySelector('option[value="575"]');
+
+  if (wish.kind === "blank") {
+    wishHint.className = "wish-hint";
+    wishHint.textContent = `3-peaks short link · ${maxKb} KB max · 1× quota`;
+    if (opt575) opt575.disabled = false;
+  } else if (wish.kind === "conforming") {
+    wishHint.className = "wish-hint conforming";
+    wishHint.textContent = `✓ Conforming 3-peaks (${wish.canonicalWish}) · 15-char link · ${maxKb} KB max · 1× quota`;
+    if (opt575) opt575.disabled = false;
+  } else {
+    wishHint.className = "wish-hint nonconforming";
+    wishHint.textContent = `Non-conforming tag: -agy suffix · ${nonConfKb} KB cap · 2× quota`;
+    if (opt575) opt575.disabled = true;
+    if (presetEl && Number(presetEl.value) > nonConfKb) {
+      presetEl.value = "385";
+    }
+  }
+}
+
 async function fetchConfig() {
   for (const usePhp of [false, true]) {
     usePhpRouteFallback = usePhp;
@@ -168,6 +284,10 @@ async function fetchConfig() {
           document.getElementById("limit-note").textContent =
             `JPG, PNG, WebP, GIF · ${Math.round(maxImageBytes / 1024)} KB max`;
         }
+        if (data.nonConformingMaxImageBytes) {
+          nonConformingMaxBytes = Number(data.nonConformingMaxImageBytes) || nonConformingMaxBytes;
+        }
+        updateWishHint();
         return;
       }
     } catch {
@@ -194,6 +314,7 @@ function stageFile(file) {
     uploadStatus.className = "status-line";
     stagingArea.classList.remove("hidden");
     resultsCard.classList.add("hidden");
+    updateWishHint();
   };
   reader.readAsDataURL(file);
 }
@@ -218,10 +339,12 @@ function showResults(imageRecord) {
 }
 
 function getSelectedBudgetBytes() {
+  const wish = parseWishInput(customNameInput?.value || "");
+  const ceiling = wish.conforming ? maxImageBytes : Math.min(maxImageBytes, nonConformingMaxBytes);
   const presetEl = document.getElementById("size-preset");
   const kb = Number(presetEl?.value || 575);
-  const requested = Number.isFinite(kb) && kb > 0 ? kb * 1024 : maxImageBytes;
-  return Math.min(maxImageBytes, requested);
+  const requested = Number.isFinite(kb) && kb > 0 ? kb * 1024 : ceiling;
+  return Math.min(ceiling, requested);
 }
 
 async function prepareBytesForUpload() {
@@ -285,10 +408,13 @@ window.addEventListener("paste", (e) => {
   }
 });
 
+customNameInput.addEventListener("input", updateWishHint);
+
 btnClear.addEventListener("click", () => {
   stagedFile = null;
   fileInput.value = "";
   customNameInput.value = "";
+  updateWishHint();
   stagingArea.classList.add("hidden");
   uploadStatus.textContent = "";
   document.querySelector(".container")?.classList.remove("is-expanded");
@@ -364,6 +490,7 @@ document.getElementById("btn-upload-another").addEventListener("click", () => {
   stagedFile = null;
   fileInput.value = "";
   customNameInput.value = "";
+  updateWishHint();
   stagingArea.classList.add("hidden");
   resultsCard.classList.add("hidden");
   uploadCard.classList.remove("hidden");
@@ -389,7 +516,7 @@ document.querySelectorAll(".copy-btn").forEach((btn) => {
 async function loadExistingIfQueryParam() {
   const raw = new URLSearchParams(window.location.search).get("img");
   if (!raw) return;
-  const slug = raw.split("]")[0].trim().toLowerCase().replace(/\^/g, "-").replace(/[^0-9a-z_-]/g, "");
+  const slug = raw.split("]")[0].trim().toLowerCase().replace(/\|/g, "_").replace(/\^/g, "-").replace(/[^0-9a-z_-]/g, "");
   if (!slug) return;
   try {
     const res = await fetch(apiEndpoint(`images/${encodeURIComponent(slug)}`));

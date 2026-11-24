@@ -16,7 +16,16 @@ import random
 import re
 from typing import AbstractSet, Iterable, Sequence
 
-from .base38 import B38, TimestampLike, clock2_from_timestamp, coerce_unix_timestamp, jesus_clock
+from .base38 import (
+    B38,
+    B38_BASE,
+    T0UX,
+    TimestampLike,
+    clock2_from_timestamp,
+    coerce_unix_timestamp,
+    encode_base38,
+    jesus_clock,
+)
 
 BIG_A: str = "A"
 CENTER_CARET: str = "^"
@@ -523,3 +532,233 @@ def generate_rolling_pool(
         )
 
     return pool
+
+
+# --- 3-Peaks Time Encoding & Wish-Window Conforming / Non-Conforming Tags ---
+
+TRIAD_BASE: int = B38_BASE**3  # 54,872
+A8A_DIGITS: str = "12345789"
+A8A_COUNT: int = 26 * len(A8A_DIGITS) * 26  # 5,408
+WISH_TRIAD_ALIASES: dict[str, str] = {
+    "pi1browser": "p1b",
+    "pibrowser": "p1b",
+    "full5screen": "f5n",
+    "fullscreen": "f5n",
+}
+CONFORMING_MAX_BYTES: int = 575 * 1024
+NONCONFORMING_MAX_BYTES: int = 385 * 1024
+CONFORMING_QUOTA_COST: int = 1
+NONCONFORMING_QUOTA_COST: int = 2
+
+_LEET_I_3PEAKS = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b", "9": "g"})
+_LEET_L_3PEAKS = str.maketrans({"0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b", "9": "g"})
+
+
+def is_a8a_triad(triad: str) -> bool:
+    """Return True iff triad matches conforming [a-z][1-57-9][a-z] (skipping 0 and 6)."""
+    return bool(re.fullmatch(r"[a-z][1-57-9][a-z]", triad or ""))
+
+
+def is_clean_3peaks_sequence(raw_code: str) -> bool:
+    """Return True iff 3-peaks code contains no 69/666 or blocked substrings across boundaries."""
+    joined = re.sub(r"[|\^-]", "", (raw_code or "").lower()).replace("_", "0")
+    letters_only = re.sub(r"[0-9]", "", joined)
+    digits_only = re.sub(r"[a-z]", "", joined)
+    leet_i = joined.translate(_LEET_I_3PEAKS)
+    leet_l = joined.translate(_LEET_L_3PEAKS)
+    if "69" in digits_only or "666" in digits_only:
+        return False
+    blocked = ("69",) + DEFAULT_BLOCKED_SUBSTRINGS
+    for view in (joined, letters_only, leet_i, leet_l):
+        for bad in blocked:
+            if bad in view:
+                return False
+    return True
+
+
+def _decode_msd_triad(msd: str) -> int | None:
+    if len(msd) != 3:
+        return None
+    total = 0
+    for ch in msd.lower():
+        norm = "0" if ch == "_" else ("^" if ch == "-" else ch)
+        idx = B38.find(norm)
+        if idx < 0:
+            return None
+        total = total * B38_BASE + idx
+    return total
+
+
+def _decode_peak_triad(triad: str) -> int | None:
+    if len(triad) != 3:
+        return None
+    total = 0
+    for ch in triad.lower():
+        norm = "|" if ch == "_" else ("^" if ch == "-" else ch)
+        idx = B38.find(norm)
+        if idx < 0:
+            return None
+        total = total * B38_BASE + idx
+    return total
+
+
+def _format_msd_triad(msd_val: int) -> str:
+    raw = encode_base38(msd_val).rjust(3, "0")[-3:]
+    return raw.replace("0", "_").replace("|", "_").replace("^", "-")
+
+
+def _encode_peak_canonical(val: int) -> str:
+    return encode_base38(val % TRIAD_BASE).rjust(3, "0")[-3:]
+
+
+def _encode_peak_urlsafe(val: int) -> str:
+    return _encode_peak_canonical(val).replace("|", "_").replace("^", "-")
+
+
+def _a8a_from_index(idx: int) -> str:
+    i = idx % A8A_COUNT
+    c0 = chr(97 + (i // 208))
+    rem = i % 208
+    c1 = A8A_DIGITS[rem // 26]
+    c2 = chr(97 + (rem % 26))
+    return f"{c0}{c1}{c2}"
+
+
+def parse_wish_window(
+    raw: str,
+    *,
+    max_bytes: int = CONFORMING_MAX_BYTES,
+    nonconforming_max_bytes: int = NONCONFORMING_MAX_BYTES,
+) -> dict[str, object]:
+    """Classify Wish-Window input into blank, conforming (1-2 a8a triads), or nonconforming."""
+    trimmed = (raw or "").strip()
+    if not trimmed:
+        return {
+            "kind": "blank",
+            "conforming": True,
+            "triads": [],
+            "canonical_wish": "",
+            "quota_cost": CONFORMING_QUOTA_COST,
+            "max_bytes": max_bytes,
+        }
+
+    tokens = [t for t in re.split(r"[\s^/\-]+", trimmed.lower()) if t]
+    if 1 <= len(tokens) <= 2:
+        mapped = [WISH_TRIAD_ALIASES.get(t, t) for t in tokens]
+        if all(is_a8a_triad(t) and is_clean_3peaks_sequence(t) for t in mapped):
+            canonical_wish = "^".join(mapped)
+            if is_clean_3peaks_sequence(canonical_wish):
+                return {
+                    "kind": "conforming",
+                    "conforming": True,
+                    "triads": mapped,
+                    "canonical_wish": canonical_wish,
+                    "quota_cost": CONFORMING_QUOTA_COST,
+                    "max_bytes": max_bytes,
+                }
+
+    return {
+        "kind": "nonconforming",
+        "conforming": False,
+        "triads": [],
+        "canonical_wish": "",
+        "quota_cost": NONCONFORMING_QUOTA_COST,
+        "max_bytes": min(max_bytes, nonconforming_max_bytes),
+    }
+
+
+def mint_conforming_3peaks_slug(
+    wish_triads: Sequence[str],
+    timestamp: TimestampLike = None,
+    *,
+    existing_pool: AbstractSet[str] | None = None,
+) -> dict[str, object]:
+    """Mint a 15-char 3-peaks time code (<msd>-<t1>-<t2>-<s3>) incorporating 1 or 2 conforming triads."""
+    if not (1 <= len(wish_triads) <= 2):
+        raise ValueError("mint_conforming_3peaks_slug requires 1 or 2 conforming triads")
+    clean_wish = [WISH_TRIAD_ALIASES.get(str(t).lower(), str(t).lower()) for t in wish_triads]
+    if not all(is_a8a_triad(t) and is_clean_3peaks_sequence(t) for t in clean_wish) or not is_clean_3peaks_sequence(
+        "^".join(clean_wish)
+    ):
+        raise ValueError(f"Non-conforming or blocked wish triads: {wish_triads!r}")
+
+    taken = existing_pool or frozenset()
+    sec = max(T0UX, coerce_unix_timestamp(timestamp))
+    t1 = clean_wish[0]
+    v1 = _decode_peak_triad(t1) or 0
+
+    for _ in range(2000):
+        elapsed = sec - T0UX
+        msd_val, lsd_val = divmod(elapsed, TRIAD_BASE)
+        msd = _format_msd_triad(msd_val)
+        if not is_clean_3peaks_sequence(msd.replace("_", "0")):
+            sec = T0UX + (msd_val + 1) * TRIAD_BASE
+            continue
+
+        if len(clean_wish) == 2:
+            t2 = clean_wish[1]
+            v2 = _decode_peak_triad(t2) or 0
+            needed = (lsd_val - msd_val - v1 - v2) % TRIAD_BASE
+            s3_canon = _encode_peak_canonical(needed)
+            s3_slug = s3_canon if is_a8a_triad(s3_canon) else _encode_peak_urlsafe(needed)
+            canonical = f"{msd}^{t1}^{t2}^{s3_canon}"
+            slug = f"{msd}-{t1}-{t2}-{s3_slug}"
+            if (
+                is_clean_3peaks_sequence(canonical)
+                and is_clean_3peaks_sequence(slug)
+                and slug not in taken
+                and canonical not in taken
+            ):
+                return {"slug": slug, "canonical": canonical, "unix_seconds": sec}
+        else:
+            rem = (lsd_val - msd_val - v1) % TRIAD_BASE
+            for attempt in range(400):
+                t2 = _a8a_from_index(elapsed + attempt * 37)
+                if not is_clean_3peaks_sequence(t2):
+                    continue
+                v2 = _decode_peak_triad(t2) or 0
+                needed = (rem - v2) % TRIAD_BASE
+                s3_canon = _encode_peak_canonical(needed)
+                s3_slug = s3_canon if is_a8a_triad(s3_canon) else _encode_peak_urlsafe(needed)
+                canonical = f"{msd}^{t1}^{t2}^{s3_canon}"
+                slug = f"{msd}-{t1}-{t2}-{s3_slug}"
+                if (
+                    is_clean_3peaks_sequence(canonical)
+                    and is_clean_3peaks_sequence(slug)
+                    and slug not in taken
+                    and canonical not in taken
+                ):
+                    return {"slug": slug, "canonical": canonical, "unix_seconds": sec}
+
+        sec += 1
+
+    raise RuntimeError("Unable to mint unique conforming 3-peaks slug")
+
+
+def decode_3peaks_timestamp(code: str) -> int | None:
+    """Decode a 7-char Single Peak or 15-char Triple Peak code back to Unix seconds since epoch."""
+    s = (code or "").strip().lower()
+    if len(s) == 7 and s[3] in ("^", "-"):
+        msd, p1 = s[:3], s[4:7]
+        if not is_a8a_triad(p1):
+            return None
+        msd_val = _decode_msd_triad(msd)
+        lsd_val = _decode_peak_triad(p1)
+        if msd_val is None or lsd_val is None:
+            return None
+        return T0UX + msd_val * TRIAD_BASE + lsd_val
+
+    if len(s) == 15 and s[3] in ("^", "-") and s[7] in ("^", "-") and s[11] in ("^", "-"):
+        msd, p1, p2, p3 = s[:3], s[4:7], s[8:11], s[12:15]
+        if not (is_a8a_triad(p1) and is_a8a_triad(p2)):
+            return None
+        msd_val = _decode_msd_triad(msd)
+        v1 = _decode_peak_triad(p1)
+        v2 = _decode_peak_triad(p2)
+        v3 = _decode_peak_triad(p3)
+        if msd_val is None or v1 is None or v2 is None or v3 is None:
+            return None
+        lsd_val = (v1 + v2 + v3 + msd_val) % TRIAD_BASE
+        return T0UX + msd_val * TRIAD_BASE + lsd_val
+
+    return None

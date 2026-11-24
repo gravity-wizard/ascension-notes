@@ -4,10 +4,12 @@ declare(strict_types=1);
 require_once __DIR__ . '/lib/bootstrap.php';
 $config = tw23_load_config(__DIR__);
 
-header('Content-Type: application/json; charset=utf-8');
-header('Cache-Control: no-store, private');
-header('CDN-Cache-Control: no-store');
-header('Cloudflare-CDN-Cache-Control: no-store');
+if (!headers_sent()) {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store, private');
+    header('CDN-Cache-Control: no-store');
+    header('Cloudflare-CDN-Cache-Control: no-store');
+}
 
 function json_out(int $code, array $payload): never {
     http_response_code($code);
@@ -127,7 +129,7 @@ function is_clean_alnum_tag(string $s): bool {
 }
 
 function is_clean_acode_sequence(string $rawCode): bool {
-    $joined = strtr(strtolower($rawCode), ['^' => '', '-' => '', '_' => '0']);
+    $joined = strtr(strtolower($rawCode), ['|' => '', '^' => '', '-' => '', '_' => '0']);
     $lettersOnly = preg_replace('/[0-9]/', '', $joined) ?? '';
     $digitsOnly = preg_replace('/[a-z]/', '', $joined) ?? '';
     $leetI = strtr($joined, ['0' => 'o', '1' => 'i', '3' => 'e', '4' => 'a', '5' => 's', '7' => 't', '8' => 'b', '9' => 'g']);
@@ -268,14 +270,227 @@ function mint_acode_time_slug(int $unixSeconds, array $existing): array {
     throw new RuntimeException('Unable to mint unique acode time slug.');
 }
 
-function pick_unique_slug(string $customName, array $existing): array {
+function encode_peak_triad_canonical(int $val): string {
+    $m = (($val % 54872) + 54872) % 54872;
+    return substr(str_pad(encode_compact_time($m), 3, '0', STR_PAD_LEFT), -3);
+}
+
+function encode_peak_triad_urlsafe(int $val): string {
+    return strtr(encode_peak_triad_canonical($val), ['|' => '_', '^' => '-']);
+}
+
+function decode_peak_triad(string $triad): ?int {
+    $alpha = '0123456789abcdefghijklmnopqrstuvwxyz|^';
+    $s = strtolower($triad);
+    if (strlen($s) !== 3) return null;
+    $total = 0;
+    for ($i = 0; $i < 3; $i++) {
+        $ch = $s[$i];
+        if ($ch === '_') $ch = '|';
+        elseif ($ch === '-') $ch = '^';
+        $idx = strpos($alpha, $ch);
+        if ($idx === false) return null;
+        $total = $total * 38 + $idx;
+    }
+    return $total;
+}
+
+function parse_wish_window(string $raw, array $config): array {
+    $maxBytes = (int)($config['max_image_bytes'] ?? (575 * 1024));
+    $nonConfMax = min($maxBytes, (int)($config['nonconforming_max_bytes'] ?? (385 * 1024)));
+    $nonConfCost = max(1, (int)($config['nonconforming_quota_cost'] ?? 2));
+    $trimmed = trim($raw);
+    if ($trimmed === '') {
+        return [
+            'kind' => 'blank',
+            'conforming' => true,
+            'triads' => [],
+            'canonicalWish' => '',
+            'quotaCost' => 1,
+            'maxBytes' => $maxBytes,
+        ];
+    }
+
+    $aliases = [
+        'pi1browser' => 'p1b',
+        'pibrowser' => 'p1b',
+        'full5screen' => 'f5n',
+        'fullscreen' => 'f5n',
+    ];
+    $tokens = preg_split('/[\s^\/-]+/', strtolower($trimmed), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+    if (count($tokens) >= 1 && count($tokens) <= 2) {
+        $mapped = array_map(fn(string $t) => $aliases[$t] ?? $t, $tokens);
+        $allValid = true;
+        foreach ($mapped as $t) {
+            if (!is_a8a_triad($t) || !is_clean_acode_sequence($t)) {
+                $allValid = false;
+                break;
+            }
+        }
+        if ($allValid) {
+            $canonicalWish = implode('^', $mapped);
+            if (is_clean_acode_sequence($canonicalWish)) {
+                return [
+                    'kind' => 'conforming',
+                    'conforming' => true,
+                    'triads' => $mapped,
+                    'canonicalWish' => $canonicalWish,
+                    'quotaCost' => 1,
+                    'maxBytes' => $maxBytes,
+                ];
+            }
+        }
+    }
+
+    return [
+        'kind' => 'nonconforming',
+        'conforming' => false,
+        'triads' => [],
+        'canonicalWish' => '',
+        'quotaCost' => $nonConfCost,
+        'maxBytes' => $nonConfMax,
+    ];
+}
+
+function mint_conforming_3peaks_slug(array $wishTriads, int $unixSeconds, array $existing): array {
+    $aliases = [
+        'pi1browser' => 'p1b',
+        'pibrowser' => 'p1b',
+        'full5screen' => 'f5n',
+        'fullscreen' => 'f5n',
+    ];
+    $cleanWish = array_values(array_map(fn($t) => $aliases[strtolower((string)$t)] ?? strtolower((string)$t), $wishTriads));
+    $epoch = 1584540571;
+    $triadBase = 54872;
+    $a8aCount = 5408;
+    $baseSec = max($epoch, $unixSeconds);
+    $sec = $baseSec;
+    $msdSkips = 0;
+    $lastMsdVal = -1;
+    $msd = '';
+    $msdClean = false;
+
+    $t1 = $cleanWish[0];
+    $v1 = decode_peak_triad($t1) ?? 0;
+
+    for ($step = 0; $step < 2000; ) {
+        $elapsed = $sec - $epoch;
+        $msdVal = intdiv($elapsed, $triadBase);
+        $lsdVal = $elapsed % $triadBase;
+        if ($msdVal !== $lastMsdVal) {
+            $lastMsdVal = $msdVal;
+            $msd = format_msd_triad($msdVal);
+            $msdClean = is_clean_acode_sequence(str_replace('_', '0', $msd));
+        }
+
+        if (!$msdClean) {
+            if ($msdSkips >= 64) break;
+            $msdSkips++;
+            $sec = $epoch + ($msdVal + 1) * $triadBase;
+            continue;
+        }
+
+        if (count($cleanWish) === 2) {
+            $t2 = $cleanWish[1];
+            $v2 = decode_peak_triad($t2) ?? 0;
+            $needed = (($lsdVal - $msdVal - $v1 - $v2) % $triadBase + $triadBase) % $triadBase;
+            $s3Canon = encode_peak_triad_canonical($needed);
+            $s3Slug = is_a8a_triad($s3Canon) ? $s3Canon : encode_peak_triad_urlsafe($needed);
+            $canonical = "{$msd}^{$t1}^{$t2}^{$s3Canon}";
+            $slug = "{$msd}-{$t1}-{$t2}-{$s3Slug}";
+            if (is_clean_acode_sequence($canonical) && is_clean_acode_sequence($slug) && !isset($existing[$slug]) && !isset($existing[$canonical])) {
+                return ['slug' => $slug, 'canonical' => $canonical, 'unixSeconds' => $sec];
+            }
+        } else {
+            $rem = (($lsdVal - $msdVal - $v1) % $triadBase + $triadBase) % $triadBase;
+            $seed = (($elapsed ^ 0x9e3779b9) * 2654435761) & 0x7fffffff;
+            for ($attempt = 0; $attempt < 600; $attempt++) {
+                $idx2 = (($seed + ($attempt + 1) * 2246822519) & 0x7fffffff) % $a8aCount;
+                $t2 = a8a_from_index($idx2);
+                if (!is_clean_acode_sequence($t2)) continue;
+                $v2 = decode_peak_triad($t2) ?? 0;
+                $needed = ($rem - $v2 + $triadBase) % $triadBase;
+                $cand3 = encode_peak_triad_canonical($needed);
+                if (!is_a8a_triad($cand3) || !is_clean_acode_sequence($cand3)) continue;
+                $canonical = "{$msd}^{$t1}^{$t2}^{$cand3}";
+                $slug = "{$msd}-{$t1}-{$t2}-{$cand3}";
+                if (is_clean_acode_sequence($canonical) && is_clean_acode_sequence($slug) && !isset($existing[$slug]) && !isset($existing[$canonical])) {
+                    return ['slug' => $slug, 'canonical' => $canonical, 'unixSeconds' => $sec];
+                }
+            }
+            for ($attempt = 0; $attempt < 200; $attempt++) {
+                $idx2 = (($seed + ($attempt + 1) * 668265263) & 0x7fffffff) % $a8aCount;
+                $t2 = a8a_from_index($idx2);
+                if (!is_clean_acode_sequence($t2)) continue;
+                $v2 = decode_peak_triad($t2) ?? 0;
+                $needed = ($rem - $v2 + $triadBase) % $triadBase;
+                $s3Canon = encode_peak_triad_canonical($needed);
+                $s3Slug = encode_peak_triad_urlsafe($needed);
+                $canonical = "{$msd}^{$t1}^{$t2}^{$s3Canon}";
+                $slug = "{$msd}-{$t1}-{$t2}-{$s3Slug}";
+                if (is_clean_acode_sequence($canonical) && is_clean_acode_sequence($slug) && !isset($existing[$slug]) && !isset($existing[$canonical])) {
+                    return ['slug' => $slug, 'canonical' => $canonical, 'unixSeconds' => $sec];
+                }
+            }
+        }
+
+        $step++;
+        $sec++;
+    }
+
+    throw new RuntimeException('Unable to mint unique conforming 3-peaks slug.');
+}
+
+function decode_acode_timestamp(string $code): ?int {
+    $s = strtolower(trim($code));
+    $epoch = 1584540571;
+    $triadBase = 54872;
+    $isSep = fn(string $c) => $c === '^' || $c === '-';
+
+    if (strlen($s) === 7 && $isSep($s[3])) {
+        $msd = substr($s, 0, 3);
+        $p1 = substr($s, 4, 3);
+        if (!is_a8a_triad($p1)) return null;
+        $msdVal = decode_compact_time($msd);
+        $lsdVal = decode_peak_triad($p1);
+        if ($msdVal === null || $lsdVal === null) return null;
+        return $epoch + $msdVal * $triadBase + $lsdVal;
+    }
+
+    if (strlen($s) === 15 && $isSep($s[3]) && $isSep($s[7]) && $isSep($s[11])) {
+        $msd = substr($s, 0, 3);
+        $p1 = substr($s, 4, 3);
+        $p2 = substr($s, 8, 3);
+        $p3 = substr($s, 12, 3);
+        if (!is_a8a_triad($p1) || !is_a8a_triad($p2)) return null;
+        $msdVal = decode_compact_time($msd);
+        $v1 = decode_peak_triad($p1);
+        $v2 = decode_peak_triad($p2);
+        $v3 = decode_peak_triad($p3);
+        if ($msdVal === null || $v1 === null || $v2 === null || $v3 === null) return null;
+        $lsdVal = ($v1 + $v2 + $v3 + $msdVal) % $triadBase;
+        return $epoch + $msdVal * $triadBase + $lsdVal;
+    }
+
+    return null;
+}
+
+function pick_unique_slug(string $customName, array $existing, array $config = [], ?int $now = null): array {
+    $ts = $now ?? time();
+    $wish = parse_wish_window($customName, $config);
+    if ($wish['kind'] === 'blank') {
+        return mint_acode_time_slug($ts, $existing);
+    }
+    if ($wish['kind'] === 'conforming') {
+        return mint_conforming_3peaks_slug($wish['triads'], $ts, $existing);
+    }
     $prefix = sanitize_slug($customName);
     if ($prefix === '' || !is_clean_acode_sequence($prefix)) {
-        return mint_acode_time_slug(time(), $existing);
+        return mint_acode_time_slug($ts, $existing);
     }
     $epoch = 1584540571;
     $agyOffset = 10 * 38 * 38 + 16 * 38 + 34; // decode("agy")
-    $baseSec = max($epoch, time());
+    $baseSec = max($epoch, $ts);
     for ($bump = 0; $bump < 90; $bump++) {
         $elapsed = ($baseSec + $bump) - $epoch;
         $anchor = encode_compact_time($elapsed + $agyOffset);
@@ -304,6 +519,10 @@ function build_snippets(string $root, array $rec): array {
     ];
 }
 
+if (defined('TW23_API_LIB_ONLY') && TW23_API_LIB_ONLY === true) {
+    return;
+}
+
 $route = trim((string)($_GET['route'] ?? ''), '/');
 if ($route === '' && isset($_SERVER['REQUEST_URI'])) {
     $p = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?: '';
@@ -314,11 +533,14 @@ if ($route === '' && isset($_SERVER['REQUEST_URI'])) {
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
 if ($route === 'health') {
+    $maxAll = (int)$config['max_image_bytes'];
+    $nonConfMax = min($maxAll, (int)($config['nonconforming_max_bytes'] ?? (385 * 1024)));
     json_out(200, [
         'ok' => true,
         'brand' => 'Twisted23',
         'runtime' => 'hostinger-php',
-        'maxImageBytes' => (int)$config['max_image_bytes'],
+        'maxImageBytes' => $maxAll,
+        'nonConformingMaxImageBytes' => $nonConfMax,
     ]);
 }
 
@@ -347,9 +569,17 @@ if ($route === 'images/upload' && $method === 'POST') {
     if ($bytes === '') json_out(400, ['ok' => false, 'error' => 'Empty image payload.']);
     $fmt = detect_image_format($bytes);
     if (!$fmt) json_out(400, ['ok' => false, 'error' => 'Only PNG, JPEG, WebP, and GIF images are supported.']);
+
+    $wish = parse_wish_window($customName, $config);
     $maxBytes = (int)$config['max_image_bytes'];
     if (strlen($bytes) > $maxBytes) {
         json_out(413, ['ok' => false, 'error' => 'Image exceeds ' . round($maxBytes / 1024) . ' KB limit.']);
+    }
+    if (!$wish['conforming'] && strlen($bytes) > $wish['maxBytes']) {
+        json_out(413, [
+            'ok' => false,
+            'error' => 'Non-conforming wish tags cap at ' . round($wish['maxBytes'] / 1024) . ' KB. Enter conforming a8a tags like p1b^f5n or leave blank for ' . round($maxBytes / 1024) . ' KB.',
+        ]);
     }
 
     $dailyQuota = (int)(getenv('TWISTED23_IP_DAILY_QUOTA') ?: 60);
@@ -357,13 +587,17 @@ if ($route === 'images/upload' && $method === 'POST') {
     $dayKey = 'ip:' . $ipHash . ':' . gmdate('Y-m-d');
     $rootUrl = base_url_prefix();
 
-    $res = with_store($config, function (array &$state, bool &$mutate) use ($config, $customName, $bytes, $fmt, $maxBytes, $dailyQuota, $dayKey, $rootUrl): array {
+    $res = with_store($config, function (array &$state, bool &$mutate) use ($config, $customName, $wish, $bytes, $fmt, $dailyQuota, $dayKey, $rootUrl): array {
         $used = (int)($state['dailyUploadsByUserDay'][$dayKey] ?? 0);
-        if ($used >= $dailyQuota) {
-            return ['status' => 429, 'body' => ['ok' => false, 'error' => 'Daily upload limit reached. Try again tomorrow.']];
+        $cost = (int)$wish['quotaCost'];
+        if ($used + $cost > $dailyQuota) {
+            $errMsg = (!$wish['conforming'] && $used + 1 <= $dailyQuota)
+                ? "Non-conforming wish tags require {$cost} quota units ({$used}/{$dailyQuota} used). Enter conforming a8a tags like p1b^f5n or leave blank to use your remaining 1x slot."
+                : 'Daily upload limit reached. Try again tomorrow.';
+            return ['status' => 429, 'body' => ['ok' => false, 'error' => $errMsg]];
         }
 
-        $minted = pick_unique_slug($customName, $state['imagesBySlug']);
+        $minted = pick_unique_slug($customName, $state['imagesBySlug'], $config);
         $slug = $minted['slug'];
         $storedName = "{$slug}.{$fmt['ext']}";
         $uploadsDir = rtrim($config['data_dir'], '/') . '/uploads';
@@ -373,6 +607,10 @@ if ($route === 'images/upload' && $method === 'POST') {
         $title = substr(trim($customName), 0, 64) ?: ($minted['canonical'] ?? $slug);
         $rec = [
             'slug' => $slug,
+            'canonical' => $minted['canonical'] ?? null,
+            'wishMode' => $wish['kind'],
+            'conforming' => $wish['conforming'],
+            'quotaCost' => $cost,
             'storedFilename' => $storedName,
             'ext' => $fmt['ext'],
             'mime' => $fmt['mime'],
@@ -383,7 +621,7 @@ if ($route === 'images/upload' && $method === 'POST') {
         ];
         $rec['snippets'] = build_snippets($rootUrl, $rec);
         $state['imagesBySlug'][$slug] = $rec;
-        $state['dailyUploadsByUserDay'][$dayKey] = $used + 1;
+        $state['dailyUploadsByUserDay'][$dayKey] = $used + $cost;
         $mutate = true;
 
         return [
@@ -392,9 +630,11 @@ if ($route === 'images/upload' && $method === 'POST') {
                 'ok' => true,
                 'image' => $rec,
                 'hosting' => [
-                    'maxImageBytes' => $maxBytes,
+                    'maxImageBytes' => (int)$wish['maxBytes'],
                     'dailyQuota' => $dailyQuota,
-                    'dailyRemaining' => max(0, $dailyQuota - ($used + 1)),
+                    'dailyUsed' => $used + $cost,
+                    'dailyRemaining' => max(0, $dailyQuota - ($used + $cost)),
+                    'quotaCost' => $cost,
                 ],
             ],
         ];
@@ -403,7 +643,8 @@ if ($route === 'images/upload' && $method === 'POST') {
 }
 
 if (str_starts_with($route, 'images/')) {
-    $slug = str_replace('^', '-', preg_replace('/[^0-9a-z_^-]/', '', strtolower(trim(rawurldecode(substr($route, 7))))) ?? '');
+    $rawLookup = strtolower(trim(rawurldecode(substr($route, 7))));
+    $slug = preg_replace('/[^0-9a-z_-]/', '', strtr($rawLookup, ['|' => '_', '^' => '-'])) ?? '';
     $rec = with_store($config, fn(array $state) => $state['imagesBySlug'][$slug] ?? null);
     if (!$rec) json_out(404, ['ok' => false, 'error' => 'Image not found']);
     $rec['snippets'] = build_snippets(base_url_prefix(), $rec);

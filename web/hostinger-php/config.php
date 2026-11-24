@@ -2,8 +2,10 @@
 declare(strict_types=1);
 
 return [
-    // Configurable per-image cap: e.g. 575 KB (588800), 385 KB (394240), or 57 KB (58368)
+    // Configurable per-image cap: 575 KB (588800) for blank/conforming a8a tags, 385 KB (394240) for non-conforming tags
     'max_image_bytes' => (int)(getenv('TWISTED23_MAX_IMAGE_BYTES') ?: 575 * 1024),
+    'nonconforming_max_bytes' => (int)(getenv('TWISTED23_NONCONFORMING_MAX_BYTES') ?: 385 * 1024),
+    'nonconforming_quota_cost' => (int)(getenv('TWISTED23_NONCONFORMING_QUOTA_COST') ?: 2),
     'l1_daily_quota'  => (int)(getenv('TWISTED23_L1_DAILY_QUOTA') ?: 10),
     'l2_daily_quota'  => (int)(getenv('TWISTED23_L2_DAILY_QUOTA') ?: 50),
 

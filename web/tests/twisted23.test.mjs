@@ -3,7 +3,16 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { decodeAcodeTimestamp, isCleanAcodeSequence, mintAcodeTimeSlug, mintAgyTimeTag, pickUniqueSlug, sanitizeSlug } from "../lib/images.mjs";
+import {
+  decodeAcodeTimestamp,
+  isCleanAcodeSequence,
+  mintAcodeTimeSlug,
+  mintAgyTimeTag,
+  mintConforming3PeaksSlug,
+  parseWishWindow,
+  pickUniqueSlug,
+  sanitizeSlug,
+} from "../lib/images.mjs";
 import { createStore } from "../lib/store.mjs";
 import { createAppServer } from "../server.mjs";
 
@@ -81,7 +90,8 @@ test("Public UI contains zero references to NDA, Levels, or Base38", async () =>
 test("Minimal ImgBB flow: custom/short -agy filenames, 575KB limit, cache headers, and IP quota", async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "twisted23-agy-"));
   const dbPath = path.join(tmpDir, "store.json");
-  process.env.TWISTED23_IP_DAILY_QUOTA = "3";
+  // Uncle Norman (2x) + blank (1x) + Binary Test (2x) = 5 quota units
+  process.env.TWISTED23_IP_DAILY_QUOTA = "5";
 
   const store = createStore({ filePath: dbPath });
   const server = createAppServer({ store });
@@ -306,6 +316,123 @@ test("mintAcodeTimeSlug skips dirty msd buckets (1676806318 msd=169, 2080794573 
     assert.equal(isCleanAcodeSequence(res.slug), true, `Expected clean slug for ${ts}, got ${res.slug}`);
     assert.equal(decodeAcodeTimestamp(res.canonical), res.unixSeconds);
     assert.ok(res.unixSeconds > ts, `Expected unixSeconds > ${ts}, got ${res.unixSeconds}`);
+  }
+});
+
+test("Wish-window incorporates p1b^f5n (pi1browser full5screen) into 15-char 3-peaks with 0s drift and prices non-conforming tags at 385KB + 2x quota", async () => {
+  // 1. Direct p1b^f5n and alias pi1browser full5screen classification
+  for (const wishInput of ["p1b^f5n", "P1B-F5N", "pi1browser full5screen", "pi1browser^full5screen"]) {
+    const parsed = parseWishWindow(wishInput);
+    assert.equal(parsed.kind, "conforming");
+    assert.equal(parsed.conforming, true);
+    assert.deepEqual(parsed.triads, ["p1b", "f5n"]);
+    assert.equal(parsed.canonicalWish, "p1b^f5n");
+    assert.equal(parsed.quotaCost, 1);
+    assert.equal(parsed.maxBytes, 575 * 1024);
+  }
+
+  // 2. Single conforming triad (p1b or f5n)
+  const singleWish = parseWishWindow("p1b");
+  assert.equal(singleWish.kind, "conforming");
+  assert.deepEqual(singleWish.triads, ["p1b"]);
+  const minted1 = mintConforming3PeaksSlug(["p1b"], 1795453749);
+  assert.equal(minted1.slug.length, 15);
+  assert.ok(minted1.slug.includes("-p1b-"));
+  assert.equal(decodeAcodeTimestamp(minted1.slug), minted1.unixSeconds);
+  assert.equal(decodeAcodeTimestamp(minted1.canonical), minted1.unixSeconds);
+
+  // 3. Two conforming triads (p1b^f5n) across 120 consecutive seconds (covering '_'/'-' Peak 3 complements)
+  const baseTs = 1795453700;
+  for (let offset = 0; offset < 120; offset++) {
+    const ts = baseTs + offset;
+    const minted = mintConforming3PeaksSlug(["p1b", "f5n"], ts);
+    assert.equal(minted.slug.length, 15, `Expected 15-char slug at ${ts}, got ${minted.slug}`);
+    assert.match(minted.slug, /^[1-9a-z_-]{3}-p1b-f5n-[0-9a-z_-]{3}$/);
+    assert.equal(isCleanAcodeSequence(minted.slug), true);
+    assert.equal(isCleanAcodeSequence(minted.canonical), true);
+    assert.equal(decodeAcodeTimestamp(minted.slug), minted.unixSeconds);
+    assert.equal(decodeAcodeTimestamp(minted.canonical), minted.unixSeconds);
+  }
+
+  // 4. Non-conforming classification (Uncle Norman, digits 0/6, >2 triads)
+  for (const raw of ["Uncle Norman", "a0a", "a6a", "p1b^f5n^k9m"]) {
+    const nc = parseWishWindow(raw);
+    assert.equal(nc.kind, "nonconforming", `Expected nonconforming for ${raw}`);
+    assert.equal(nc.conforming, false);
+    assert.equal(nc.quotaCost, 2);
+    assert.equal(nc.maxBytes, 385 * 1024);
+  }
+
+  // 5. HTTP integration: 450 KB fails for Uncle Norman (385 KB cap) yet succeeds for p1b^f5n (575 KB cap),
+  //    and remaining 1x quota slot rejects non-conforming (2x) while allowing conforming p1b^f5n (1x)!
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "twisted23-wish-"));
+  const dbPath = path.join(tmpDir, "store.json");
+  process.env.TWISTED23_IP_DAILY_QUOTA = "3";
+
+  const store = createStore({ filePath: dbPath });
+  const server = createAppServer({ store });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  const pngHead = Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+  ]);
+  const payload450Kb = Buffer.concat([pngHead, Buffer.alloc(450 * 1024)]);
+  const tinyPng = Buffer.concat([pngHead, Buffer.from("WishPixels")]);
+
+  try {
+    // 450 KB with non-conforming "Uncle Norman" -> 413 (exceeds 385 KB non-conforming cap; 0 quota consumed)
+    let res = await fetch(`${baseUrl}/api/images/upload`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "X-Custom-Name": encodeURIComponent("Uncle Norman"),
+      },
+      body: payload450Kb,
+    });
+    assert.equal(res.status, 413);
+
+    // 450 KB with conforming "p1b^f5n" -> 200 (15-char 3-peaks slug, 1/3 quota used!)
+    res = await fetch(`${baseUrl}/api/images/upload`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "X-Custom-Name": encodeURIComponent("p1b^f5n"),
+      },
+      body: payload450Kb,
+    });
+    assert.equal(res.status, 200);
+    let body = await res.json();
+    assert.equal(body.image.slug.length, 15);
+    assert.match(body.image.slug, /^[1-9a-z_-]{3}-p1b-f5n-[0-9a-z_-]{3}$/);
+    assert.equal(body.image.wishMode, "conforming");
+    assert.equal(body.hosting.quotaCost, 1);
+    assert.equal(body.hosting.dailyRemaining, 2);
+
+    // Canonical '^' & '|' viewer lookup resolves cleanly
+    const canonicalLookup = await fetch(`${baseUrl}/api/images/${encodeURIComponent(body.image.canonical)}`);
+    assert.equal(canonicalLookup.status, 200);
+
+    // Tiny non-conforming upload -> 200 (consumes 2 quota units -> 3/3 used, 0 remaining)
+    res = await fetch(`${baseUrl}/api/images/upload`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "X-Custom-Name": encodeURIComponent("Uncle Norman"),
+      },
+      body: tinyPng,
+    });
+    assert.equal(res.status, 200);
+    body = await res.json();
+    assert.equal(body.image.wishMode, "nonconforming");
+    assert.equal(body.hosting.quotaCost, 2);
+    assert.equal(body.hosting.dailyRemaining, 0);
+  } finally {
+    delete process.env.TWISTED23_IP_DAILY_QUOTA;
+    await new Promise((resolve) => server.close(resolve));
+    await fs.rm(tmpDir, { recursive: true, force: true });
   }
 });
 

@@ -1,7 +1,19 @@
 import crypto from "node:crypto";
 
 export const DEFAULT_MAX_IMAGE_BYTES = Number(process.env.TWISTED23_MAX_IMAGE_BYTES || 575 * 1024);
+export const DEFAULT_NONCONFORMING_MAX_BYTES = Number(
+  process.env.TWISTED23_NONCONFORMING_MAX_BYTES || 385 * 1024
+);
 export const DEFAULT_IP_DAILY_QUOTA = Number(process.env.TWISTED23_IP_DAILY_QUOTA || 60);
+export const CONFORMING_QUOTA_COST = 1;
+export const NONCONFORMING_QUOTA_COST = Number(process.env.TWISTED23_NONCONFORMING_QUOTA_COST || 2);
+
+export const WISH_TRIAD_ALIASES = Object.freeze({
+  pi1browser: "p1b",
+  pibrowser: "p1b",
+  full5screen: "f5n",
+  fullscreen: "f5n",
+});
 
 const TIME_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz|^";
 const TIME_BASE = 38;
@@ -15,6 +27,13 @@ const BLOCKED_PARTS = ["69", "666", "anal", "anus", "arse", "bitch", "btch", "co
 export function getMaxImageBytes() {
   const val = Number(process.env.TWISTED23_MAX_IMAGE_BYTES || DEFAULT_MAX_IMAGE_BYTES);
   return Number.isFinite(val) && val > 0 ? val : 575 * 1024;
+}
+
+export function getNonConformingMaxImageBytes() {
+  const maxAll = getMaxImageBytes();
+  const val = Number(process.env.TWISTED23_NONCONFORMING_MAX_BYTES || DEFAULT_NONCONFORMING_MAX_BYTES);
+  const cap = Number.isFinite(val) && val > 0 ? val : 385 * 1024;
+  return Math.min(maxAll, cap);
 }
 
 export function getDailyIpQuota() {
@@ -123,7 +142,7 @@ function hasLeetIOrLettersTrigram(msdI12, msdI2_1369, msdL12, msdL2_1369, idx1, 
 export function isCleanAcodeSequence(rawCode) {
   const joined = String(rawCode || "")
     .toLowerCase()
-    .replace(/[\^-]/g, "")
+    .replace(/[|\^-]/g, "")
     .replace(/_/g, "0");
   const lettersOnly = joined.replace(/[0-9]/g, "");
   const digitsOnly = joined.replace(/[a-z]/g, "");
@@ -364,22 +383,222 @@ export function mintAcodeTimeSlug(unixSeconds = Math.floor(Date.now() / 1000), i
   throw new Error("Unable to mint unique acode time slug.");
 }
 
-export function decodeAcodeTimestamp(code) {
-  const parts = String(code || "").trim().split(/[\^-]/);
-  if (parts.length !== 2 && parts.length !== 4) return null;
-  const [msd, ...peaks] = parts;
-  if (msd.length !== 3 || !peaks.every((p) => isA8aTriad(p))) return null;
-  const msdVal = decodeCompactTime(msd);
-  if (msdVal === null) return null;
+function encodePeakTriadCanonical(val) {
+  return encodeCompactTime(((val % TRIAD_BASE) + TRIAD_BASE) % TRIAD_BASE).padStart(3, "0").slice(-3);
+}
 
-  let lsdVal;
-  if (peaks.length === 1) {
-    lsdVal = decodeCompactTime(peaks[0]);
-  } else {
-    const sum = peaks.reduce((acc, p) => acc + decodeCompactTime(p), 0);
-    lsdVal = (sum + msdVal) % TRIAD_BASE;
+function encodePeakTriadUrlSafe(val) {
+  return encodePeakTriadCanonical(val).replace(/\|/g, "_").replace(/\^/g, "-");
+}
+
+function decodePeakTriad(triad) {
+  const s = String(triad || "").toLowerCase();
+  if (s.length !== 3) return null;
+  let total = 0;
+  for (let i = 0; i < 3; i++) {
+    const ch = s[i] === "_" ? "|" : s[i] === "-" ? "^" : s[i];
+    const idx = TIME_ALPHABET.indexOf(ch);
+    if (idx < 0) return null;
+    total = total * TIME_BASE + idx;
   }
-  return TIME_EPOCH + msdVal * TRIAD_BASE + lsdVal;
+  return total;
+}
+
+export function parseWishWindow(raw) {
+  const maxBytes = getMaxImageBytes();
+  const nonConformingMaxBytes = getNonConformingMaxImageBytes();
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) {
+    return {
+      kind: "blank",
+      conforming: true,
+      triads: [],
+      canonicalWish: "",
+      quotaCost: CONFORMING_QUOTA_COST,
+      maxBytes,
+    };
+  }
+
+  const tokens = trimmed
+    .toLowerCase()
+    .split(/[\s^\/-]+/)
+    .filter(Boolean);
+
+  if (tokens.length >= 1 && tokens.length <= 2) {
+    const mapped = tokens.map((tok) => WISH_TRIAD_ALIASES[tok] || tok);
+    if (mapped.every((t) => isA8aTriad(t) && isCleanAcodeSequence(t))) {
+      const canonicalWish = mapped.join("^");
+      if (isCleanAcodeSequence(canonicalWish)) {
+        return {
+          kind: "conforming",
+          conforming: true,
+          triads: mapped,
+          canonicalWish,
+          quotaCost: CONFORMING_QUOTA_COST,
+          maxBytes,
+        };
+      }
+    }
+  }
+
+  return {
+    kind: "nonconforming",
+    conforming: false,
+    triads: [],
+    canonicalWish: "",
+    quotaCost: NONCONFORMING_QUOTA_COST,
+    maxBytes: nonConformingMaxBytes,
+  };
+}
+
+export function mintConforming3PeaksSlug(
+  wishTriads,
+  unixSeconds = Math.floor(Date.now() / 1000),
+  isTakenFn = () => false
+) {
+  if (!Array.isArray(wishTriads) || wishTriads.length < 1 || wishTriads.length > 2) {
+    throw new Error("mintConforming3PeaksSlug expects 1 or 2 conforming a8a triads.");
+  }
+  const cleanWish = wishTriads.map((t) => (WISH_TRIAD_ALIASES[String(t).toLowerCase()] || String(t).toLowerCase()));
+  if (!cleanWish.every((t) => isA8aTriad(t) && isCleanAcodeSequence(t)) || !isCleanAcodeSequence(cleanWish.join("^"))) {
+    throw new Error(`Invalid conforming wish triads: ${wishTriads.join("^")}`);
+  }
+
+  const baseSec = Math.max(TIME_EPOCH, Math.trunc(unixSeconds));
+  let sec = baseSec;
+  let msdSkips = 0;
+  let lastMsdVal = -1;
+  let msd = "";
+  let msdNorm = "";
+  let msdClean = false;
+
+  const t1 = cleanWish[0];
+  const v1 = decodePeakTriad(t1);
+
+  for (let step = 0; step < 2000; ) {
+    const elapsed = sec - TIME_EPOCH;
+    const msdVal = Math.floor(elapsed / TRIAD_BASE);
+    const lsdVal = elapsed % TRIAD_BASE;
+    if (msdVal !== lastMsdVal) {
+      lastMsdVal = msdVal;
+      msd = formatMsdTriad(msdVal);
+      msdNorm = msd.replace(/_/g, "0");
+      msdClean = isCleanAcodeSequence(msdNorm);
+    }
+
+    if (!msdClean) {
+      if (msdSkips >= 64) break;
+      msdSkips++;
+      sec = TIME_EPOCH + (msdVal + 1) * TRIAD_BASE;
+      continue;
+    }
+
+    if (cleanWish.length === 2) {
+      const t2 = cleanWish[1];
+      const v2 = decodePeakTriad(t2);
+      const needed = (((lsdVal - msdVal - v1 - v2) % TRIAD_BASE) + TRIAD_BASE) % TRIAD_BASE;
+      const a8aIdx = NEEDED_TO_CLEAN_A8A[needed];
+      const s3Canonical = a8aIdx >= 0 ? A8A_TRIADS[a8aIdx] : encodePeakTriadCanonical(needed);
+      const s3Slug = a8aIdx >= 0 ? A8A_TRIADS[a8aIdx] : encodePeakTriadUrlSafe(needed);
+      const canonical = `${msd}^${t1}^${t2}^${s3Canonical}`;
+      const slug = `${msd}-${t1}-${t2}-${s3Slug}`;
+      if (
+        isCleanAcodeSequence(canonical) &&
+        isCleanAcodeSequence(slug) &&
+        !isTakenFn(slug) &&
+        !isTakenFn(canonical)
+      ) {
+        return {
+          slug,
+          canonical,
+          mode: a8aIdx >= 0 ? "wish2-a8a" : "wish2-b38",
+          unixSeconds: sec,
+        };
+      }
+    } else {
+      // 1-triad wish: try 2 pure a8a solver peaks first at exact second, then exact Base-38 Peak 3 for 0s drift
+      const remAfterT1 = (((lsdVal - msdVal - v1) % TRIAD_BASE) + TRIAD_BASE) % TRIAD_BASE;
+      const seed = Math.imul(elapsed ^ 0x9e3779b9, 2654435761) >>> 0;
+      for (let attempt = 0; attempt < 600; attempt++) {
+        const idx2 = ((seed + Math.imul(attempt + 1, 2246822519)) >>> 0) % A8A_COUNT;
+        if (!A8A_CLEAN[idx2]) continue;
+        const needed = (remAfterT1 - A8A_VALS[idx2] + TRIAD_BASE) % TRIAD_BASE;
+        const idx3 = NEEDED_TO_CLEAN_A8A[needed];
+        if (idx3 < 0) continue;
+        const t2 = A8A_TRIADS[idx2];
+        const t3 = A8A_TRIADS[idx3];
+        const canonical = `${msd}^${t1}^${t2}^${t3}`;
+        const slug = `${msd}-${t1}-${t2}-${t3}`;
+        if (
+          isCleanAcodeSequence(canonical) &&
+          isCleanAcodeSequence(slug) &&
+          !isTakenFn(slug) &&
+          !isTakenFn(canonical)
+        ) {
+          return { slug, canonical, mode: "wish1-a8a", unixSeconds: sec };
+        }
+      }
+
+      for (let attempt = 0; attempt < 200; attempt++) {
+        const idx2 = ((seed + Math.imul(attempt + 1, 668265263)) >>> 0) % A8A_COUNT;
+        if (!A8A_CLEAN[idx2]) continue;
+        const t2 = A8A_TRIADS[idx2];
+        const needed = (remAfterT1 - A8A_VALS[idx2] + TRIAD_BASE) % TRIAD_BASE;
+        const s3Canonical = encodePeakTriadCanonical(needed);
+        const s3Slug = encodePeakTriadUrlSafe(needed);
+        const canonical = `${msd}^${t1}^${t2}^${s3Canonical}`;
+        const slug = `${msd}-${t1}-${t2}-${s3Slug}`;
+        if (
+          isCleanAcodeSequence(canonical) &&
+          isCleanAcodeSequence(slug) &&
+          !isTakenFn(slug) &&
+          !isTakenFn(canonical)
+        ) {
+          return { slug, canonical, mode: "wish1-b38", unixSeconds: sec };
+        }
+      }
+    }
+
+    step++;
+    sec++;
+  }
+
+  throw new Error("Unable to mint unique conforming 3-peaks slug.");
+}
+
+export function decodeAcodeTimestamp(code) {
+  const s = String(code || "").trim().toLowerCase();
+  const isSep = (ch) => ch === "^" || ch === "-";
+
+  // Single Peak: 7 chars (m0m1m2-p10p11p12)
+  if (s.length === 7 && isSep(s[3])) {
+    const msd = s.slice(0, 3);
+    const p1 = s.slice(4, 7);
+    if (!isA8aTriad(p1)) return null;
+    const msdVal = decodeCompactTime(msd);
+    const lsdVal = decodePeakTriad(p1);
+    if (msdVal === null || lsdVal === null) return null;
+    return TIME_EPOCH + msdVal * TRIAD_BASE + lsdVal;
+  }
+
+  // Triple Peak: 15 chars (m0m1m2-p10p11p12-p20p21p22-p30p31p32)
+  // Supports pure-a8a peaks and conforming 2-wish Base-38 complement in Peak 3
+  if (s.length === 15 && isSep(s[3]) && isSep(s[7]) && isSep(s[11])) {
+    const msd = s.slice(0, 3);
+    const p1 = s.slice(4, 7);
+    const p2 = s.slice(8, 11);
+    const p3 = s.slice(12, 15);
+    if (!isA8aTriad(p1) || !isA8aTriad(p2)) return null;
+    const msdVal = decodeCompactTime(msd);
+    const v1 = decodePeakTriad(p1);
+    const v2 = decodePeakTriad(p2);
+    const v3 = decodePeakTriad(p3);
+    if (msdVal === null || v1 === null || v2 === null || v3 === null) return null;
+    const lsdVal = (v1 + v2 + v3 + msdVal) % TRIAD_BASE;
+    return TIME_EPOCH + msdVal * TRIAD_BASE + lsdVal;
+  }
+
+  return null;
 }
 
 export function mintAgyTimeTag(unixSeconds = Math.floor(Date.now() / 1000), isTakenFn = () => false, customPrefix = "") {
@@ -435,11 +654,19 @@ export function sanitizeSlug(raw) {
 }
 
 export function pickUniqueSlug(customName, existingImages = {}, unixSeconds = Math.floor(Date.now() / 1000)) {
+  const isTaken = (cand) => Boolean(existingImages[cand]);
+  const wish = parseWishWindow(customName);
+  if (wish.kind === "blank") {
+    return mintAcodeTimeSlug(unixSeconds, isTaken).slug;
+  }
+  if (wish.kind === "conforming") {
+    return mintConforming3PeaksSlug(wish.triads, unixSeconds, isTaken).slug;
+  }
   const prefix = sanitizeSlug(customName);
   if (!prefix) {
-    return mintAcodeTimeSlug(unixSeconds, (cand) => Boolean(existingImages[cand])).slug;
+    return mintAcodeTimeSlug(unixSeconds, isTaken).slug;
   }
-  return mintAgyTimeTag(unixSeconds, (cand) => Boolean(existingImages[cand]), prefix).slug;
+  return mintAgyTimeTag(unixSeconds, isTaken, prefix).slug;
 }
 
 export function buildHostedImageSnippets({
@@ -484,6 +711,7 @@ export function buildImageRecord({
     throw err;
   }
 
+  const wish = parseWishWindow(customName);
   const maxBytes = getMaxImageBytes();
   if (buffer.length > maxBytes) {
     const err = new Error(
@@ -492,16 +720,34 @@ export function buildImageRecord({
     err.statusCode = 413;
     throw err;
   }
+  if (!wish.conforming && buffer.length > wish.maxBytes) {
+    const err = new Error(
+      `Non-conforming wish tags cap at ${(wish.maxBytes / 1024).toFixed(0)} KB (${(buffer.length / 1024).toFixed(1)} KB received). Enter conforming a8a tags like p1b^f5n or leave blank for ${(maxBytes / 1024).toFixed(0)} KB.`
+    );
+    err.statusCode = 413;
+    throw err;
+  }
 
-  const prefix = sanitizeSlug(customName);
+  const isTaken = (cand) => Boolean(existingImages[cand]);
   let slug;
   let canonicalCode = null;
-  if (!prefix) {
-    const minted = mintAcodeTimeSlug(unixSeconds, (cand) => Boolean(existingImages[cand]));
+  if (wish.kind === "blank") {
+    const minted = mintAcodeTimeSlug(unixSeconds, isTaken);
+    slug = minted.slug;
+    canonicalCode = minted.canonical;
+  } else if (wish.kind === "conforming") {
+    const minted = mintConforming3PeaksSlug(wish.triads, unixSeconds, isTaken);
     slug = minted.slug;
     canonicalCode = minted.canonical;
   } else {
-    slug = mintAgyTimeTag(unixSeconds, (cand) => Boolean(existingImages[cand]), prefix).slug;
+    const prefix = sanitizeSlug(customName);
+    if (!prefix) {
+      const minted = mintAcodeTimeSlug(unixSeconds, isTaken);
+      slug = minted.slug;
+      canonicalCode = minted.canonical;
+    } else {
+      slug = mintAgyTimeTag(unixSeconds, isTaken, prefix).slug;
+    }
   }
   const storedFilename = `${slug}.${fmt.ext}`;
   const title = String(customName || "").trim().slice(0, 64) || canonicalCode || slug;
@@ -518,6 +764,10 @@ export function buildImageRecord({
 
   return {
     slug,
+    canonical: canonicalCode,
+    wishMode: wish.kind,
+    conforming: wish.conforming,
+    quotaCost: wish.quotaCost,
     storedFilename,
     ext: fmt.ext,
     mime: fmt.mime,

@@ -166,6 +166,29 @@ input[type="text"]:focus {
   box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.14);
 }
 
+.wish-hint {
+  margin-top: 5px;
+  font-size: 11.5px;
+  color: #4b5563;
+  padding: 3px 8px;
+  border-radius: 5px;
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+}
+
+.wish-hint.conforming {
+  color: #065f46;
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+  font-weight: 500;
+}
+
+.wish-hint.nonconforming {
+  color: #92400e;
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+
 .btn-row {
   display: flex;
   flex-wrap: wrap;

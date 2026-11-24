@@ -7,8 +7,8 @@ $config = tw23_load_config(__DIR__);
 $name = ltrim((string)($_GET['name'] ?? ''), '/');
 if ($name === '' && isset($_SERVER['REQUEST_URI'])) {
     $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?: '';
-    if (str_starts_with($path, '/i/')) {
-        $name = substr($path, 3);
+    if (($pos = strpos($path, '/i/')) !== false) {
+        $name = substr($path, $pos + 3);
     }
 }
 

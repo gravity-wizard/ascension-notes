@@ -609,5 +609,47 @@ class SkipVowelsAndAttachmentTests(unittest.TestCase):
         self.assertEqual(swift_style.base38_timestamp_tag, expr)
 
 
+class ThreePeaksWishWindowTests(unittest.TestCase):
+    def test_wish_window_p1b_f5n_and_aliases_vs_nonconforming_price(self) -> None:
+        from ascension import (
+            CONFORMING_MAX_BYTES,
+            NONCONFORMING_MAX_BYTES,
+            decode_3peaks_timestamp,
+            mint_conforming_3peaks_slug,
+            parse_wish_window,
+        )
+
+        w_direct = parse_wish_window("p1b^f5n")
+        self.assertEqual(w_direct["kind"], "conforming")
+        self.assertTrue(w_direct["conforming"])
+        self.assertEqual(w_direct["triads"], ["p1b", "f5n"])
+        self.assertEqual(w_direct["canonical_wish"], "p1b^f5n")
+        self.assertEqual(w_direct["quota_cost"], 1)
+        self.assertEqual(w_direct["max_bytes"], CONFORMING_MAX_BYTES)
+
+        w_alias = parse_wish_window("pi1browser full5screen")
+        self.assertEqual(w_alias["kind"], "conforming")
+        self.assertEqual(w_alias["triads"], ["p1b", "f5n"])
+
+        w_nonconf = parse_wish_window("Uncle Norman")
+        self.assertEqual(w_nonconf["kind"], "nonconforming")
+        self.assertFalse(w_nonconf["conforming"])
+        self.assertEqual(w_nonconf["quota_cost"], 2)
+        self.assertEqual(w_nonconf["max_bytes"], NONCONFORMING_MAX_BYTES)
+
+        # Reject 0/6 middle digits as non-conforming
+        self.assertFalse(parse_wish_window("a0a")["conforming"])
+        self.assertFalse(parse_wish_window("a6a")["conforming"])
+
+        # Exact 15-char 0-second drift round-trip across normal and dead-zone timestamps
+        for ts in (1795385000, 1795453749, T0UX + 12345678):
+            minted = mint_conforming_3peaks_slug(["p1b", "f5n"], ts)
+            self.assertEqual(len(minted["slug"]), 15)
+            self.assertIn("-p1b-f5n-", minted["slug"])
+            self.assertIn("^p1b^f5n^", minted["canonical"])
+            self.assertEqual(decode_3peaks_timestamp(minted["slug"]), minted["unix_seconds"])
+            self.assertEqual(decode_3peaks_timestamp(minted["canonical"]), minted["unix_seconds"])
+
+
 if __name__ == "__main__":
     unittest.main()
