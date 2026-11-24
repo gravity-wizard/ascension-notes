@@ -500,3 +500,58 @@ def decode_clock_expression(expr: str) -> int:
 def jesus_clock_expression_to_datetime(expr: str) -> datetime:
     """Convert a Base-38 clock or arithmetic expression back into a UTC datetime."""
     return datetime.fromtimestamp(decode_clock_expression(expr), tz=timezone.utc)
+
+
+# --- 38 Levels of Ascension (0..37 -> '0'..'9','a'..'z','|','^') & Time0 Epoch Ceiling ---
+
+MAX_ASCENSION_LEVEL_TOTAL: int = 37  # 0..37 = 38 levels total, culminating in '^'
+
+
+def ascension_glyph(level: int) -> str:
+    """Map Ascension Level 0..37 to its canonical Base-38 glyph ('0'..'9','a'..'z','|','^')."""
+    if not isinstance(level, int) or level < 0 or level > MAX_ASCENSION_LEVEL_TOTAL:
+        raise ValueError(f"Ascension level must be an integer in 0..37, got {level!r}")
+    return B38[level]
+
+
+def ascension_level_from_glyph(glyph: str) -> int:
+    """Map canonical Base-38 glyph ('0'..'^') back to Ascension Level 0..37."""
+    if not isinstance(glyph, str) or len(glyph) != 1 or glyph not in B38:
+        raise ValueError(f"Invalid Base-38 ascension glyph: {glyph!r}")
+    return B38.index(glyph)
+
+
+def max_ascension_level(timestamp: TimestampLike = None) -> int:
+    """Return the global Time0 Epoch Ceiling (0..37) at `timestamp`.
+
+    Advances by 1 each exact UTC Time0 anniversary (March 18, 14:09:31Z):
+      - 2020-03-18T14:09:31Z -> Level 0 ('0')
+      - 2026                 -> Level 6 ('6')
+      - 2027-03-18T14:09:31Z -> Level 7 ('7')  [Max Ascension Level 7 in 2027]
+      - 2057-03-18T14:09:31Z -> Level 37 ('^') [Summit Peak]
+    """
+    unix_ts = coerce_unix_timestamp(timestamp)
+    if unix_ts <= T0UX:
+        return 0
+    dt_utc = datetime.fromtimestamp(unix_ts, tz=timezone.utc)
+    anniv_this_year = datetime(dt_utc.year, 3, 18, 14, 9, 31, tzinfo=timezone.utc)
+    years_elapsed = (dt_utc.year - 2020) if dt_utc >= anniv_this_year else (dt_utc.year - 2021)
+    return max(0, min(MAX_ASCENSION_LEVEL_TOTAL, years_elapsed))
+
+
+def next_ascension_unlock_utc(timestamp: TimestampLike = None) -> tuple[int, datetime] | None:
+    """Return (next_level, unlock_datetime_utc), or None once Level 37 ('^') has opened."""
+    cur = max_ascension_level(timestamp)
+    if cur >= MAX_ASCENSION_LEVEL_TOTAL:
+        return None
+    nxt = cur + 1
+    return (nxt, datetime(2020 + nxt, 3, 18, 14, 9, 31, tzinfo=timezone.utc))
+
+
+def is_miracle_window(timestamp: TimestampLike = None) -> bool:
+    """Return True during the annual March 8 (00:00Z) -> March 18 (14:09:31Z) Miracle Window."""
+    unix_ts = coerce_unix_timestamp(timestamp)
+    dt_utc = datetime.fromtimestamp(unix_ts, tz=timezone.utc)
+    start = datetime(dt_utc.year, 3, 8, 0, 0, 0, tzinfo=timezone.utc)
+    end = datetime(dt_utc.year, 3, 18, 14, 9, 31, tzinfo=timezone.utc)
+    return start <= dt_utc <= end

@@ -650,6 +650,45 @@ class ThreePeaksWishWindowTests(unittest.TestCase):
             self.assertEqual(decode_3peaks_timestamp(minted["slug"]), minted["unix_seconds"])
             self.assertEqual(decode_3peaks_timestamp(minted["canonical"]), minted["unix_seconds"])
 
+    def test_38_levels_epoch_ceiling_and_2027_level_7_gate(self) -> None:
+        from ascension import (
+            ascension_glyph,
+            ascension_level_from_glyph,
+            is_miracle_window,
+            max_ascension_level,
+            next_ascension_unlock_utc,
+        )
+
+        self.assertEqual(ascension_glyph(0), "0")
+        self.assertEqual(ascension_glyph(7), "7")
+        self.assertEqual(ascension_glyph(36), "|")
+        self.assertEqual(ascension_glyph(37), "^")
+        self.assertEqual(ascension_level_from_glyph("^"), 37)
+
+        # Nov 2026 -> Level 6 ('6'), next unlock is Level 7 at 2027-03-18T14:09:31Z
+        nov_2026 = datetime(2026, 11, 24, 12, 0, 0, tzinfo=timezone.utc)
+        self.assertEqual(max_ascension_level(nov_2026), 6)
+        nxt = next_ascension_unlock_utc(nov_2026)
+        self.assertEqual(nxt, (7, datetime(2027, 3, 18, 14, 9, 31, tzinfo=timezone.utc)))
+
+        # 1 second before 2027 Time0 anniversary is still Level 6, and inside March 8->18 Miracle Window
+        one_sec_before = datetime(2027, 3, 18, 14, 9, 30, tzinfo=timezone.utc)
+        self.assertEqual(max_ascension_level(one_sec_before), 6)
+        self.assertTrue(is_miracle_window(one_sec_before))
+
+        # Exact 2027 Time0 anniversary opens Level 7 ('7') and holds at 7 through end of 2027
+        exact_2027 = datetime(2027, 3, 18, 14, 9, 31, tzinfo=timezone.utc)
+        end_2027 = datetime(2027, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+        self.assertEqual(max_ascension_level(exact_2027), 7)
+        self.assertEqual(max_ascension_level(end_2027), 7)
+
+        # 2057 Time0 anniversary reaches Level 37 ('^') and clamps at 37 thereafter
+        summit_2057 = datetime(2057, 3, 18, 14, 9, 31, tzinfo=timezone.utc)
+        future_2090 = datetime(2090, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        self.assertEqual(max_ascension_level(summit_2057), 37)
+        self.assertEqual(max_ascension_level(future_2090), 37)
+        self.assertIsNone(next_ascension_unlock_utc(summit_2057))
+
 
 if __name__ == "__main__":
     unittest.main()
