@@ -413,6 +413,8 @@ export function parseWishWindow(raw) {
       kind: "blank",
       conforming: true,
       triads: [],
+      peaks: 3,
+      slugLength: 15,
       canonicalWish: "",
       quotaCost: CONFORMING_QUOTA_COST,
       maxBytes,
@@ -424,15 +426,18 @@ export function parseWishWindow(raw) {
     .split(/[\s^\/-]+/)
     .filter(Boolean);
 
-  if (tokens.length >= 1 && tokens.length <= 2) {
+  if (tokens.length >= 1 && tokens.length <= 6) {
     const mapped = tokens.map((tok) => WISH_TRIAD_ALIASES[tok] || tok);
     if (mapped.every((t) => isA8aTriad(t) && isCleanAcodeSequence(t))) {
       const canonicalWish = mapped.join("^");
       if (isCleanAcodeSequence(canonicalWish)) {
+        const peaks = mapped.length === 1 ? 3 : mapped.length + 1;
         return {
           kind: "conforming",
           conforming: true,
           triads: mapped,
+          peaks,
+          slugLength: 3 + 4 * peaks,
           canonicalWish,
           quotaCost: CONFORMING_QUOTA_COST,
           maxBytes,
@@ -445,6 +450,8 @@ export function parseWishWindow(raw) {
     kind: "nonconforming",
     conforming: false,
     triads: [],
+    peaks: 0,
+    slugLength: 0,
     canonicalWish: "",
     quotaCost: NONCONFORMING_QUOTA_COST,
     maxBytes: nonConformingMaxBytes,
@@ -456,8 +463,8 @@ export function mintConforming3PeaksSlug(
   unixSeconds = Math.floor(Date.now() / 1000),
   isTakenFn = () => false
 ) {
-  if (!Array.isArray(wishTriads) || wishTriads.length < 1 || wishTriads.length > 2) {
-    throw new Error("mintConforming3PeaksSlug expects 1 or 2 conforming a8a triads.");
+  if (!Array.isArray(wishTriads) || wishTriads.length < 1 || wishTriads.length > 6) {
+    throw new Error("mintConforming3PeaksSlug expects 1 to 6 conforming a8a triads.");
   }
   const cleanWish = wishTriads.map((t) => (WISH_TRIAD_ALIASES[String(t).toLowerCase()] || String(t).toLowerCase()));
   if (!cleanWish.every((t) => isA8aTriad(t) && isCleanAcodeSequence(t)) || !isCleanAcodeSequence(cleanWish.join("^"))) {
@@ -473,7 +480,8 @@ export function mintConforming3PeaksSlug(
   let msdClean = false;
 
   const t1 = cleanWish[0];
-  const v1 = decodePeakTriad(t1);
+  const wishVals = cleanWish.map((t) => decodePeakTriad(t));
+  const wishSum = wishVals.reduce((acc, v) => acc + v, 0);
 
   for (let step = 0; step < 2000; ) {
     const elapsed = sec - TIME_EPOCH;
@@ -493,15 +501,14 @@ export function mintConforming3PeaksSlug(
       continue;
     }
 
-    if (cleanWish.length === 2) {
-      const t2 = cleanWish[1];
-      const v2 = decodePeakTriad(t2);
-      const needed = (((lsdVal - msdVal - v1 - v2) % TRIAD_BASE) + TRIAD_BASE) % TRIAD_BASE;
+    if (cleanWish.length >= 2) {
+      const peaks = cleanWish.length + 1;
+      const needed = (((lsdVal - msdVal - wishSum) % TRIAD_BASE) + TRIAD_BASE) % TRIAD_BASE;
       const a8aIdx = NEEDED_TO_CLEAN_A8A[needed];
-      const s3Canonical = a8aIdx >= 0 ? A8A_TRIADS[a8aIdx] : encodePeakTriadCanonical(needed);
-      const s3Slug = a8aIdx >= 0 ? A8A_TRIADS[a8aIdx] : encodePeakTriadUrlSafe(needed);
-      const canonical = `${msd}^${t1}^${t2}^${s3Canonical}`;
-      const slug = `${msd}-${t1}-${t2}-${s3Slug}`;
+      const snCanonical = a8aIdx >= 0 ? A8A_TRIADS[a8aIdx] : encodePeakTriadCanonical(needed);
+      const snSlug = a8aIdx >= 0 ? A8A_TRIADS[a8aIdx] : encodePeakTriadUrlSafe(needed);
+      const canonical = `${msd}^${cleanWish.join("^")}^${snCanonical}`;
+      const slug = `${msd}-${cleanWish.join("-")}-${snSlug}`;
       if (
         isCleanAcodeSequence(canonical) &&
         isCleanAcodeSequence(slug) &&
@@ -511,13 +518,14 @@ export function mintConforming3PeaksSlug(
         return {
           slug,
           canonical,
-          mode: a8aIdx >= 0 ? "wish2-a8a" : "wish2-b38",
+          peaks,
+          mode: a8aIdx >= 0 ? `wish${cleanWish.length}-a8a` : `wish${cleanWish.length}-b38`,
           unixSeconds: sec,
         };
       }
     } else {
       // 1-triad wish: try 2 pure a8a solver peaks first at exact second, then exact Base-38 Peak 3 for 0s drift
-      const remAfterT1 = (((lsdVal - msdVal - v1) % TRIAD_BASE) + TRIAD_BASE) % TRIAD_BASE;
+      const remAfterT1 = (((lsdVal - msdVal - wishSum) % TRIAD_BASE) + TRIAD_BASE) % TRIAD_BASE;
       const seed = Math.imul(elapsed ^ 0x9e3779b9, 2654435761) >>> 0;
       for (let attempt = 0; attempt < 600; attempt++) {
         const idx2 = ((seed + Math.imul(attempt + 1, 2246822519)) >>> 0) % A8A_COUNT;
@@ -535,7 +543,7 @@ export function mintConforming3PeaksSlug(
           !isTakenFn(slug) &&
           !isTakenFn(canonical)
         ) {
-          return { slug, canonical, mode: "wish1-a8a", unixSeconds: sec };
+          return { slug, canonical, peaks: 3, mode: "wish1-a8a", unixSeconds: sec };
         }
       }
 
@@ -554,7 +562,7 @@ export function mintConforming3PeaksSlug(
           !isTakenFn(slug) &&
           !isTakenFn(canonical)
         ) {
-          return { slug, canonical, mode: "wish1-b38", unixSeconds: sec };
+          return { slug, canonical, peaks: 3, mode: "wish1-b38", unixSeconds: sec };
         }
       }
     }
@@ -563,7 +571,7 @@ export function mintConforming3PeaksSlug(
     sec++;
   }
 
-  throw new Error("Unable to mint unique conforming 3-peaks slug.");
+  throw new Error("Unable to mint unique conforming N-peaks slug.");
 }
 
 export function decodeAcodeTimestamp(code) {
@@ -581,21 +589,26 @@ export function decodeAcodeTimestamp(code) {
     return TIME_EPOCH + msdVal * TRIAD_BASE + lsdVal;
   }
 
-  // Triple Peak: 15 chars (m0m1m2-p10p11p12-p20p21p22-p30p31p32)
-  // Supports pure-a8a peaks and conforming 2-wish Base-38 complement in Peak 3
-  if (s.length === 15 && isSep(s[3]) && isSep(s[7]) && isSep(s[11])) {
-    const msd = s.slice(0, 3);
-    const p1 = s.slice(4, 7);
-    const p2 = s.slice(8, 11);
-    const p3 = s.slice(12, 15);
-    if (!isA8aTriad(p1) || !isA8aTriad(p2)) return null;
-    const msdVal = decodeCompactTime(msd);
-    const v1 = decodePeakTriad(p1);
-    const v2 = decodePeakTriad(p2);
-    const v3 = decodePeakTriad(p3);
-    if (msdVal === null || v1 === null || v2 === null || v3 === null) return null;
-    const lsdVal = (v1 + v2 + v3 + msdVal) % TRIAD_BASE;
-    return TIME_EPOCH + msdVal * TRIAD_BASE + lsdVal;
+  // N-Peaks: 15 (3peaks), 19 (4peaks), 23 (5peaks), 27 (6peaks), 31 (7peaks)
+  if (s.length >= 15 && (s.length - 3) % 4 === 0) {
+    const peaks = (s.length - 3) / 4;
+    if (peaks >= 3 && peaks <= 7) {
+      for (let i = 0; i < peaks; i++) {
+        if (!isSep(s[3 + 4 * i])) return null;
+      }
+      const msdVal = decodeCompactTime(s.slice(0, 3));
+      if (msdVal === null) return null;
+      let sum = msdVal;
+      for (let i = 0; i < peaks; i++) {
+        const triad = s.slice(4 + 4 * i, 7 + 4 * i);
+        if (i < peaks - 1 && !isA8aTriad(triad)) return null;
+        const v = decodePeakTriad(triad);
+        if (v === null) return null;
+        sum += v;
+      }
+      const lsdVal = sum % TRIAD_BASE;
+      return TIME_EPOCH + msdVal * TRIAD_BASE + lsdVal;
+    }
   }
 
   return null;

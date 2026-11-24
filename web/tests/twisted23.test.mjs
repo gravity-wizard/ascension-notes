@@ -354,8 +354,27 @@ test("Wish-window incorporates p1b^f5n (pi1browser full5screen) into 15-char 3-p
     assert.equal(decodeAcodeTimestamp(minted.canonical), minted.unixSeconds);
   }
 
-  // 4. Non-conforming classification (Uncle Norman, digits 0/6, >2 triads)
-  for (const raw of ["Uncle Norman", "a0a", "a6a", "p1b^f5n^k9m"]) {
+  // 4. N-Peaks progression: 3peaks=15, 4peaks=19, 5peaks=23 (Twisted23), 6peaks=27, 7peaks=31
+  const peakCases = [
+    { wish: ["p1b", "f5n"], peaks: 3, expectedLen: 15 },
+    { wish: ["p1b", "f5n", "k9m"], peaks: 4, expectedLen: 19 },
+    { wish: ["p1b", "f5n", "k9m", "w3b"], peaks: 5, expectedLen: 23 },
+    { wish: ["p1b", "f5n", "k9m", "w3b", "z8c"], peaks: 6, expectedLen: 27 },
+    { wish: ["p1b", "f5n", "k9m", "w3b", "z8c", "m4r"], peaks: 7, expectedLen: 31 },
+  ];
+  for (const pc of peakCases) {
+    const parsedN = parseWishWindow(pc.wish.join("^"));
+    assert.equal(parsedN.kind, "conforming");
+    assert.equal(parsedN.peaks, pc.peaks);
+    assert.equal(parsedN.slugLength, pc.expectedLen);
+    const mintedN = mintConforming3PeaksSlug(pc.wish, 1795453749);
+    assert.equal(mintedN.slug.length, pc.expectedLen, `Expected ${pc.expectedLen}-char ${pc.peaks}peaks slug, got ${mintedN.slug}`);
+    assert.equal(decodeAcodeTimestamp(mintedN.slug), mintedN.unixSeconds);
+    assert.equal(decodeAcodeTimestamp(mintedN.canonical), mintedN.unixSeconds);
+  }
+
+  // 4b. Non-conforming classification (Uncle Norman, digits 0/6, >6 triads)
+  for (const raw of ["Uncle Norman", "a0a", "a6a", "p1b^f5n^k9m^w3b^z8c^m4r^t2v"]) {
     const nc = parseWishWindow(raw);
     assert.equal(nc.kind, "nonconforming", `Expected nonconforming for ${raw}`);
     assert.equal(nc.conforming, false);

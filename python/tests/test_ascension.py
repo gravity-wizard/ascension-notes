@@ -641,7 +641,7 @@ class ThreePeaksWishWindowTests(unittest.TestCase):
         self.assertFalse(parse_wish_window("a0a")["conforming"])
         self.assertFalse(parse_wish_window("a6a")["conforming"])
 
-        # Exact 15-char 0-second drift round-trip across normal and dead-zone timestamps
+        # Exact 15/19/23/27/31-char (3..7 peaks) 0-second drift round-trip
         for ts in (1795385000, 1795453749, T0UX + 12345678):
             minted = mint_conforming_3peaks_slug(["p1b", "f5n"], ts)
             self.assertEqual(len(minted["slug"]), 15)
@@ -649,6 +649,17 @@ class ThreePeaksWishWindowTests(unittest.TestCase):
             self.assertIn("^p1b^f5n^", minted["canonical"])
             self.assertEqual(decode_3peaks_timestamp(minted["slug"]), minted["unix_seconds"])
             self.assertEqual(decode_3peaks_timestamp(minted["canonical"]), minted["unix_seconds"])
+
+        for triads, expected_len in (
+            (["p1b", "f5n", "k9m"], 19),
+            (["p1b", "f5n", "k9m", "w3b"], 23),
+            (["p1b", "f5n", "k9m", "w3b", "z8c"], 27),
+            (["p1b", "f5n", "k9m", "w3b", "z8c", "m4r"], 31),
+        ):
+            m_n = mint_conforming_3peaks_slug(triads, 1795453749)
+            self.assertEqual(len(m_n["slug"]), expected_len)
+            self.assertEqual(decode_3peaks_timestamp(m_n["slug"]), m_n["unix_seconds"])
+            self.assertEqual(decode_3peaks_timestamp(m_n["canonical"]), m_n["unix_seconds"])
 
     def test_38_levels_epoch_ceiling_and_2027_level_7_gate(self) -> None:
         from ascension import (
